@@ -1,0 +1,1621 @@
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
+import requests
+import json
+import os
+import io
+import re
+import unicodedata
+from groq import Groq
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+from datetime import datetime
+from typing import Optional
+
+import pikepdf
+import pdfplumber
+import warnings
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+from conexion import OracleEnterpriseConnection
+
+
+# ═══════════════════════════════════════════════════════════════
+# CUPS ENGINE — cargado una sola vez al arrancar el servidor
+# ═══════════════════════════════════════════════════════════════
+
+_CUPS_SINONIMOS = {
+    "cuadro hematico con diferencial": "hemograma con diferencial leucograma",
+    "cuadro hematico iv":           "hemograma iv automatizado histograma",
+    "cuadro hematico iii":          "hemograma iii automatizado indices eritrocitarios",
+    "cuadro hematico ii":           "hemograma ii semiautomatizado eritrocitos indices",
+    "cuadro hematico":              "hemograma leucograma eritrocitos plaquetas",
+    "glicemia basal":               "glucosa suero fluido diferente orina",
+    "glucosa basal":                "glucosa suero fluido diferente orina",
+    "glucosa en sangre":            "glucosa suero fluido diferente orina",
+    "glicemia":                     "glucosa suero fluido diferente orina",
+    "rx de torax":                  "radiografia torax pa lateral",
+    "radiografia de torax":         "radiografia torax pa lateral",
+    "rx torax":                     "radiografia torax pa lateral",
+    "rx de":                        "radiografia de",
+    "rx ":                          "radiografia ",
+    "rayos x":                      "radiografia",
+    "tac":                          "tomografia computada",
+    "tc ":                          "tomografia computada ",
+    "rm de rodilla":                "resonancia magnetica rodilla",
+    "rm rodilla":                   "resonancia magnetica rodilla",
+    "resonancia de rodilla":        "resonancia magnetica rodilla",
+    "rm ":                          "resonancia magnetica ",
+    "mri":                          "resonancia magnetica",
+    "eco ":                         "ecografia ",
+    "urocultivo":                   "cultivo orina",
+    "parcial de orina":             "orina analisis fisico quimico citoquimico",
+    "uroanalis":                    "orina analisis fisico quimico",
+    "tsh":                          "hormona estimulante del tiroides",
+    "ecg":                          "electrocardiograma ritmo",
+    "ekg":                          "electrocardiograma ritmo",
+    "holter":                       "electrocardiograma holter monitoreo",
+    "pap":                          "citologia cervicovaginal",
+    "papanicolau":                  "citologia cervicovaginal",
+    "hemoclasificacion":            "grupo sanguineo factor rh",
+    "grupo y rh":                   "grupo sanguineo factor rh",
+    "bun":                          "nitrogeno ureico",
+    "creatinina serica":            "creatinina suero",
+    "hdl":                          "colesterol hdl",
+    "ldl":                          "colesterol ldl",
+    "ast":                          "aspartato aminotransferasa",
+    "alt":                          "alanina aminotransferasa",
+    "tgo":                          "aspartato aminotransferasa",
+    "tgp":                          "alanina aminotransferasa",
+    "vdrl":                         "sifilis prueba no treponemial",
+    "hiv":                          "vih anticuerpos",
+    "vih":                          "vih anticuerpos",
+}
+
+_CUPS_CAT_KW = {
+    "PAT":  ["biopsia", "histol", "citolog", "anatomia patol", "inmunohistoquim"],
+    "RAD":  ["radiograf", "tomograf", "ecograf", "resonancia", "mamograf",
+             "densitometr", "fluoroscop", "gamagrafia", "spect", "artrog"],
+    "CARD": ["electrocardiograma", "holter", "ecocardiograma", "ergometria", "esfuerzo"],
+    "LAB":  ["hemograma", "glucosa", "creatinina", "urea", "colesterol",
+             "triglicer", "bilirrubina", "transaminasa", "proteina", "albumina",
+             "sodio", "potasio", "calcio", "cultivo", "hormona", "cortisol",
+             "anticuerpo", "hemoglobin", "hematocrit", "leucocit", "eritrocit",
+             "plaqueta", "orina", "coagulacion", "ferritina", "insulina",
+             "prolactina", "estradiol", "testosterona", "amilasa", "lipasa"],
+}
+
+
+def _norm_cups(s: str) -> str:
+    s = str(s).upper().strip()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"[^A-Z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _expand_cups(q: str) -> str:
+    q2 = q.lower().strip()
+    for k, v in _CUPS_SINONIMOS.items():
+        if k in q2:
+            q2 = q2.replace(k, v)
+    return q2
+
+
+def _load_cups_catalog() -> pd.DataFrame:
+    base = os.path.dirname(os.path.abspath(__file__))
+    paths = {"biopsia": os.path.join(base, "BIOPSIAS.XLSX"),
+             "general": os.path.join(base, "parear_procedimientos.xlsx")}
+    frames = []
+    for fuente, path in paths.items():
+        if os.path.exists(path):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                df = pd.read_excel(path)
+            df["_fuente"] = fuente
+            frames.append(df)
+        else:
+            print(f"[CUPS] Advertencia: no se encontro {path}")
+    if not frames:
+        return pd.DataFrame(columns=["CODIGO_CUPS", "NOMBRE_PROCEDIMIENTO", "_fuente", "_norm"])
+    cat = pd.concat(frames, ignore_index=True)
+    cat["CODIGO_CUPS"] = cat["CODIGO_CUPS"].astype(str).str.strip()
+    cat["_norm"] = cat["NOMBRE_PROCEDIMIENTO"].apply(_norm_cups)
+    return cat
+
+
+_CUPS_CATALOG = _load_cups_catalog()
+_CUPS_VEC = None
+_CUPS_MAT = None
+
+if not _CUPS_CATALOG.empty:
+    _CUPS_VEC = TfidfVectorizer(ngram_range=(1, 3), analyzer="word", min_df=1)
+    _CUPS_MAT = _CUPS_VEC.fit_transform(_CUPS_CATALOG["_norm"])
+    print(f"[CUPS] Catalogo cargado: {len(_CUPS_CATALOG)} procedimientos")
+else:
+    print("[CUPS] Advertencia: catalogo CUPS vacio")
+
+
+def asignar_cups(tipo_examen: str, fhir_category: str = "", codigo_cups_llm=None, score_min: float = 0.20) -> dict:
+    empty = {"codigo_cups": None, "nombre_cups": None, "cups_score": 0.0, "cups_fuente": "sin_match"}
+    if _CUPS_CATALOG.empty or _CUPS_VEC is None:
+        return empty
+    if codigo_cups_llm:
+        hit = _CUPS_CATALOG[_CUPS_CATALOG["CODIGO_CUPS"] == str(codigo_cups_llm).strip()]
+        if not hit.empty:
+            r = hit.iloc[0]
+            return {"codigo_cups": r.CODIGO_CUPS, "nombre_cups": r.NOMBRE_PROCEDIMIENTO,
+                    "cups_score": 1.0, "cups_fuente": "llm"}
+    q = _norm_cups(_expand_cups(tipo_examen) + " " + tipo_examen)
+    subset = _CUPS_CATALOG
+    kws = _CUPS_CAT_KW.get(fhir_category, [])
+    if kws:
+        mask = _CUPS_CATALOG["_norm"].apply(lambda x: any(k in x.lower() for k in kws))
+        fil = _CUPS_CATALOG[mask]
+        if len(fil) >= 5:
+            subset = fil
+    if len(subset) < len(_CUPS_CATALOG):
+        sv = TfidfVectorizer(ngram_range=(1, 3), analyzer="word", min_df=1)
+        sm = sv.fit_transform(subset["_norm"])
+        sims = cosine_similarity(sv.transform([q]), sm).flatten()
+        bi = int(np.argmax(sims)); bs = float(sims[bi]); gi = subset.index[bi]
+    else:
+        sims = cosine_similarity(_CUPS_VEC.transform([q]), _CUPS_MAT).flatten()
+        gi = int(np.argmax(sims)); bs = float(sims[gi])
+    if bs < score_min:
+        return {**empty, "cups_score": round(bs, 3)}
+    r = _CUPS_CATALOG.iloc[gi]
+    return {"codigo_cups": r.CODIGO_CUPS, "nombre_cups": r.NOMBRE_PROCEDIMIENTO,
+            "cups_score": round(bs, 3), "cups_fuente": "catalogo"}
+
+# ─── Inicialización ───────────────────────────────────────────
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+load_dotenv()
+templates = Jinja2Templates(directory="templates")
+
+GROQ_API_KEY      = os.getenv("GROQ_API_KEY")
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
+
+PDF_MIN_CHARS = 80
+
+
+# ─── Modelos ──────────────────────────────────────────────────
+class BuscarArchivosRequest(BaseModel):
+    identificacion: str
+
+class AnalyzeRequest(BaseModel):
+    url: str
+    id_usuario: int
+    id_archivo: Optional[int] = None
+    password: Optional[str] = None
+    output_lang: Optional[str] = 'es'   # 'es' | 'en'
+    force_reprocess: Optional[bool] = False  # forzar reprocesamiento
+
+class SaveAnalysisRequest(BaseModel):
+    id_archivo: int
+    nombre_alternativo: str
+    analisis: str
+
+
+# ─── SQL ──────────────────────────────────────────────────────
+SQL_ARCHIVOS = """
+    SELECT
+        ar.id,
+        ar.fecha_cargue,
+        ar.id_usuario,
+        'http://tekerapp.maxapex.net/FILES_PROD_TEKER_NEW/' || ar.nombre_archivo_almacenado AS url,
+        ar.nombre_archivo,
+        us.identificacion,
+        ar.nombre_alternativo,
+        CASE WHEN ar.analisis IS NOT NULL THEN 1 ELSE 0 END AS ya_analizado,
+        ar.analisis
+    FROM tkr_archivos ar, tkr_usuarios us
+    WHERE ar.id_descripcion IN (1, 2, 4)
+      AND ar.id_usuario = us.id
+      AND us.identificacion = :identificacion
+    ORDER BY ar.fecha_cargue DESC
+"""
+
+SQL_SAVE_ANALYSIS = """
+    UPDATE tkr_archivos
+    SET nombre_alternativo = :nombre_alternativo,
+        analisis           = :analisis
+    WHERE id = :id_archivo
+"""
+
+SQL_CHECK_ANALIZADO = """
+    SELECT analisis
+    FROM tkr_archivos
+    WHERE id = :id_archivo
+      AND analisis IS NOT NULL
+"""
+
+
+# ─── Esquema FHIR + Categorización (embebido para no depender de ficheros externos) ──
+CATEGORIZACION = {
+    "disciplinas": {
+        "Laboratorio Clínico": {
+            "fhir_category": "LAB",
+            "subcategorias": ["Bioquímica","Hematología","Microbiología","Inmunología/Serología",
+                              "Parasitología","Virología","Micología","Micobacteriología",
+                              "Coagulación","Endocrinología","Toxicología"]
+        },
+        "Imagenología": {
+            "fhir_category": "RAD",
+            "subcategorias": ["Radiografía (RX)","Ecografía (US)","Tomografía Computarizada (TAC/CT)",
+                              "Resonancia Magnética (RM/MRI)","Medicina Nuclear / PET-CT",
+                              "Mamografía","Densitometría Ósea","Fluoroscopia"]
+        },
+        "Patología": {
+            "fhir_category": "PAT",
+            "subcategorias": ["Anatomía Patológica","Citología","Biopsia","Inmunohistoquímica"]
+        },
+        "Cardiología Diagnóstica": {
+            "fhir_category": "CARD",
+            "subcategorias": ["Electrocardiograma (ECG)","Holter","Ecocardiograma",
+                              "Prueba de esfuerzo","Angiografía"]
+        },
+        "Otros": {
+            "fhir_category": "OT",
+            "subcategorias": ["Endoscopía","Electrofisiología","Pruebas de Función Pulmonar",
+                              "Neurología (EEG, EMG)","Oftalmología"]
+        }
+    }
+}
+
+# Palabras clave para clasificación automática de disciplina/subcategoría
+_CLASIF_KEYWORDS = {
+    "Laboratorio Clínico": [
+        "hemograma","hematología","bioquímica","glucosa","creatinina","colesterol",
+        "triglicéridos","urea","uricemia","bilirrubina","transaminasa","ast","alt",
+        "laboratorio","bacteriología","microbiología","cultivo","antibiograma","gram",
+        "serología","elisa","pcr","coagulación","tp","tpt","fibrinógeno","tsh","t3","t4",
+        "hormona","cortisol","toxicología","uroanálisis","orina","parcial de orina",
+        "copro","parásito","hongo","micosis","hemocultivo","sangre","leucocito",
+        "eritrocito","plaqueta","neutrófilos","linfocito","eosinófilos"
+    ],
+    "Imagenología": [
+        "rayos x","rx","radiografía","radiograph","ecografía","ecografia","ultrasonido",
+        "tomografía","tac","ct scan","resonancia","mri","rm","mamografía","densitometría",
+        "gammagrafía","pet","spect","fluoroscopia","imagen","imágenes diagnósticas",
+        "radiológico","radiología"
+    ],
+    "Patología": [
+        "biopsia","histología","citología","anatomía patológica","inmunohistoquímica",
+        "pap","papanicolau","patología"
+    ],
+    "Cardiología Diagnóstica": [
+        "ecg","electrocardiograma","electrocardiograma","holter","ecocardiograma",
+        "ergometría","prueba de esfuerzo","angiografía","cateterismo"
+    ],
+}
+
+_SUBCATEG_KEYWORDS = {
+    "Hematología": ["hemograma","leucocito","eritrocito","plaqueta","neutrófilos","linfocito","eosinófilos","hematocrito","hemoglobina"],
+    "Bioquímica":  ["glucosa","creatinina","urea","colesterol","triglicéridos","bilirrubina","transaminasa","ast","alt","proteína","albúmina","electrolito","sodio","potasio","calcio","fósforo"],
+    "Microbiología": ["cultivo","antibiograma","gram","microorganismo","bacteria","resistencia","sensibilidad","ufc","hemocultivo"],
+    "Coagulación": ["tp","tpt","inr","fibrinógeno","coagulación","trombina","plaqueta"],
+    "Endocrinología": ["tsh","t3","t4","insulina","cortisol","hormona","estradiol","testosterona","prolactina","fsh","lh"],
+    "Inmunología/Serología": ["elisa","pcr","anticuerpo","antígeno","serología","vih","vdrl","hepatitis","sífilis","toxoplasma"],
+    "Parasitología": ["parásito","copro","ameba","giardia","toxocara","plasmodio","ascaris"],
+    "Virología": ["viral","vih","hepatitis b","hepatitis c","dengue","influenza","coronavirus","virus"],
+    "Radiografía (RX)": ["rayos x","rx","radiografía","radiograph"],
+    "Ecografía (US)": ["ecografía","ecografia","ultrasonido","us abdominal","us pélvico","doppler"],
+    "Tomografía Computarizada (TAC/CT)": ["tomografía","tac","ct scan","tac de","tc de"],
+    "Resonancia Magnética (RM/MRI)": ["resonancia","mri","rm","resonancia magnética"],
+    "Mamografía": ["mamografía"],
+    "Densitometría Ósea": ["densitometría","densidad ósea","dexa"],
+    "Biopsia": ["biopsia"],
+    "Citología": ["citología","pap","papanicolau"],
+    "Electrocardiograma (ECG)": ["ecg","electrocardiograma"],
+    "Ecocardiograma": ["ecocardiograma"],
+    "Holter": ["holter"],
+}
+
+
+def clasificar_examen(tipo_examen: str) -> dict:
+    """
+    Clasifica automáticamente un examen según su nombre retornando
+    disciplina, subcategoría y código FHIR.
+    """
+    texto = tipo_examen.lower()
+    disciplina = "Laboratorio Clínico"   # default
+    fhir_cat   = "LAB"
+    subcategoria = "Bioquímica"          # default
+
+    for disc, keywords in _CLASIF_KEYWORDS.items():
+        if any(kw in texto for kw in keywords):
+            disciplina = disc
+            fhir_cat   = CATEGORIZACION["disciplinas"][disc]["fhir_category"]
+            break
+
+    for sub, keywords in _SUBCATEG_KEYWORDS.items():
+        if any(kw in texto for kw in keywords):
+            subcategoria = sub
+            break
+
+    return {
+        "disciplina":    disciplina,
+        "subcategoria":  subcategoria,
+        "fhir_category": fhir_cat,
+    }
+
+
+
+def _try_float(val: str):
+    try:
+        return float(val.replace(",","."))
+    except Exception:
+        return None
+
+
+
+
+# ─── Prompt LLM ───────────────────────────────────────────────
+
+_CONTEXT_ES = """
+Eres un experto en interoperabilidad FHIR y clasificación de exámenes diagnósticos.
+Tu tarea es extraer TODOS los exámenes del texto/PDF proporcionado, clasificar cada uno y generar
+la estructura "resultado_procesamiento" según las siguientes reglas.
+
+════════════════════════════════════════════════
+JERARQUÍA DE CATEGORIZACIÓN (categorizacion_completa_v3.json)
+════════════════════════════════════════════════
+- Laboratorio Clínico (LAB): Bioquímica, Hematología, Microbiología, Inmunología/Serología, Parasitología, Virología, Micología, Micobacteriología, Coagulación, Endocrinología, Toxicología
+- Imagenología / Diagnóstico por Imágenes (RAD): Radiografía (RX), Ecografía (US), Tomografía Computarizada (TAC/CT), Resonancia Magnética (RM/MRI), Medicina Nuclear / PET-CT, Mamografía, Densitometría Ósea, Fluoroscopia
+- Patología (PAT): Anatomía Patológica, Citología, Biopsia, Inmunohistoquímica
+- Cardiología Diagnóstica (CARD): Electrocardiograma (ECG), Holter, Ecocardiograma, Prueba de esfuerzo, Angiografía
+- Otros Estudios Diagnósticos (OT): Endoscopía, Electrofisiología, Pruebas de Función Pulmonar, Neurología (EEG, EMG), Oftalmología
+
+════════════════════════════════════════════════
+FHIR (fhir_estructura_v3.json)
+════════════════════════════════════════════════
+- El campo "fhir_category" debe usar los códigos: LAB, RAD, PAT, CARD, OT
+- Para IMAGENOLOGÍA (RAD): incluye "fhir_imaging_study" con modalidad DICOM y región anatómica:
+  "fhir_imaging_study": {"modalidad_dicom": "DX|CT|MR|US|MG|NM|PT", "region_anatomica": "string"}
+- Para MICROBIOLOGÍA: cada hallazgo atómico es un resultado separado: microorganismo identificado,
+  método de cultivo, concentración (UFC), cada antibiótico → S/I/R, CMI si aparece.
+
+════════════════════════════════════════════════
+CUPS — REGLA CRÍTICA DE GRANULARIDAD
+════════════════════════════════════════════════
+Los códigos CUPS colombianos deben asignarse con la siguiente lógica de dos niveles:
+
+NIVEL EXAMEN (codigo_cups en el objeto examen):
+  - Exámenes de IMAGENOLOGÍA: un único CUPS por estudio (ej. RX columna, ECO abdomen, TAC tórax)
+  - Exámenes de PATOLOGÍA: un CUPS por biopsia/citología
+  - Exámenes de CARDIOLOGÍA: un CUPS por electrocardiograma, holter, ecocardiograma
+  - Paneles de laboratorio con nombre único: un CUPS por panel (ej. HEMOGRAMA COMPLETO → 903808)
+
+NIVEL PARÁMETRO (codigo_cups en cada objeto dentro de "resultados"):
+  - Paneles de química o bioquímica donde cada analito tiene su propio CUPS:
+    · Glicemia / Glucosa → 903566
+    · Colesterol total → 903440
+    · Colesterol HDL → 903441
+    · Colesterol LDL → 903442
+    · Triglicéridos → 903797
+    · Creatinina → 903466
+    · Ácido úrico → 903399
+    · Urea / BUN → 903806
+    · AST / TGO → 903424
+    · ALT / TGP → 903410
+    · Bilirrubina total → 903432
+    · Bilirrubina directa → 903433
+    · Proteínas totales → 903714
+    · Albúmina → 903405
+    · TSH → 903789
+    · T4 libre → 903787
+    · T3 → 903786
+    · Sodio → 903774
+    · Potasio → 903713
+    · Calcio → 903438
+    · Fósforo → 903707
+    · Hemoglobina → 903580
+    · Hematocrito → 903579
+    · Leucocitos → 903599
+    · Plaquetas → 903706
+    · PCR → 903711
+    · VIH Anticuerpos → 903856
+    · VDRL → 903858
+    · Parcial de orina → 903859
+  - Si el código CUPS del parámetro lo ves explícitamente en el texto OCR, úsalo directamente.
+  - Si no lo ves, deja "codigo_cups": null en el parámetro (el backend lo completará con TF-IDF).
+  - Para exámenes de imagen donde NO hay parámetros individuales CUPS, el campo codigo_cups
+    a nivel de parámetro debe ser null.
+
+REGLA DE ORO: Un examen de QUÍMICA puede contener 10 parámetros cada uno con su propio CUPS.
+Un RX de tórax tiene UN CUPS a nivel del examen, y los "resultados" son hallazgos sin CUPS.
+
+════════════════════════════════════════════════
+NOTAS OBLIGATORIAS
+════════════════════════════════════════════════
+- "notas_medico": resumen técnico clínico para el médico (máx 3 oraciones, sin obviedades).
+- "notas_paciente": explicación simple para el paciente sin tecnicismos (máx 3 oraciones).
+
+"""
+
+_CONTEXT_EN = """
+You are an expert in FHIR interoperability and diagnostic exam classification.
+Your task is to extract ALL exams from the provided text/PDF, classify each one, and generate
+the "resultado_procesamiento" structure following these rules.
+
+════════════════════════════════════════════════
+CATEGORIZATION HIERARCHY (categorizacion_completa_v3.json)
+════════════════════════════════════════════════
+- Laboratory (LAB): Biochemistry, Hematology, Microbiology, Immunology/Serology, Parasitology, Virology, Mycology, Mycobacteriology, Coagulation, Endocrinology, Toxicology
+- Imaging / Diagnostic Radiology (RAD): X-Ray, Ultrasound (US), CT Scan, MRI, Nuclear Medicine / PET-CT, Mammography, Bone Densitometry, Fluoroscopy
+- Pathology (PAT): Anatomic Pathology, Cytology, Biopsy, Immunohistochemistry
+- Diagnostic Cardiology (CARD): ECG, Holter, Echocardiogram, Stress Test, Angiography
+- Other Diagnostic Studies (OT): Endoscopy, Electrophysiology, Pulmonary Function Tests, Neurology (EEG, EMG), Ophthalmology
+
+════════════════════════════════════════════════
+FHIR (fhir_estructura_v3.json)
+════════════════════════════════════════════════
+- "fhir_category" must use codes: LAB, RAD, PAT, CARD, OT
+- For IMAGING (RAD): include "fhir_imaging_study" with DICOM modality and anatomical region:
+  "fhir_imaging_study": {"modalidad_dicom": "DX|CT|MR|US|MG|NM|PT", "region_anatomica": "string"}
+- For MICROBIOLOGY: each atomic finding is a separate result — identified microorganism,
+  culture method, concentration (CFU), each antibiotic → S/I/R, MIC if present.
+
+════════════════════════════════════════════════
+CUPS — CRITICAL GRANULARITY RULE
+════════════════════════════════════════════════
+Colombian CUPS codes must be assigned at two levels:
+
+EXAM LEVEL (codigo_cups on the exam object):
+  - IMAGING exams: one CUPS per study (e.g. chest X-ray, abdominal ultrasound, thorax CT)
+  - PATHOLOGY exams: one CUPS per biopsy/cytology
+  - CARDIOLOGY exams: one CUPS per ECG, Holter, echocardiogram
+  - Lab panels with a single unique name: one CUPS per panel (e.g. COMPLETE BLOOD COUNT → 903808)
+
+PARAMETER LEVEL (codigo_cups on each object in "resultados"):
+  - Chemistry/biochemistry panels where each analyte has its own CUPS:
+    · Glucose → 903566, Total Cholesterol → 903440, HDL → 903441, LDL → 903442
+    · Triglycerides → 903797, Creatinine → 903466, Uric Acid → 903399, Urea/BUN → 903806
+    · AST/TGO → 903424, ALT/TGP → 903410, Total Bilirubin → 903432, Direct Bilirubin → 903433
+    · Total Protein → 903714, Albumin → 903405, TSH → 903789, Free T4 → 903787, T3 → 903786
+    · Sodium → 903774, Potassium → 903713, Calcium → 903438, Phosphorus → 903707
+    · Hemoglobin → 903580, Hematocrit → 903579, WBC → 903599, Platelets → 903706
+    · CRP → 903711, HIV Antibodies → 903856, VDRL → 903858, Urinalysis → 903859
+  - If a CUPS code appears explicitly in OCR text, use it directly.
+  - If not visible, set "codigo_cups": null (backend will complete it with TF-IDF).
+  - For imaging exams, result findings have "codigo_cups": null.
+
+GOLDEN RULE: A CHEMISTRY panel may have 10 parameters each with their own CUPS.
+A chest X-ray has ONE CUPS at exam level, and its "resultados" are findings without CUPS.
+
+════════════════════════════════════════════════
+MANDATORY NOTES
+════════════════════════════════════════════════
+- "notas_medico": technical clinical summary for the physician (max 3 sentences).
+- "notas_paciente": simple explanation for the patient without jargon (max 3 sentences).
+
+"""
+
+PROMPT_ES = _CONTEXT_ES + """
+Analiza el siguiente texto que puede contener UNO O VARIOS exámenes clínicos en un mismo documento.
+
+INSTRUCCIÓN CRÍTICA: Determina si el documento contiene múltiples exámenes distintos. Un examen distinto es aquel con diferente tipo, aunque compartan fecha o institución.
+
+**INSTRUCCIÓN CRÍTICA PARA ETIQUETAS:**
+El campo "tipo_examen" se usará como título de pestaña. Debe ser:
+- Muy corto (máximo 25 caracteres), en MAYÚSCULAS, limpio.
+Ejemplos: "QUIMICA", "PERFIL LIPIDICO", "HEMATOLOGIA", "ECO ABDOMEN", "RX TORAX", "HEMOGRAMA", "TSH", "CITOLOGIA"
+
+Devuelve **SOLO** un JSON válido con esta estructura exacta:
+
+{
+  "profesional_documento": {"nombre": "string o null", "cargo": "string o null", "registro": "string o null"},
+  "institucion_documento": "string o null",
+  "examenes": [
+    {
+      "fecha": "DD/MM/YYYY o null",
+      "tipo_examen": "string CORTO Y EN MAYÚSCULAS",
+      "disciplina": "string",
+      "subcategoria": "string",
+      "fhir_category": "LAB|RAD|PAT|CARD|OT",
+      "region_anatomica": "string o null",
+      "codigo_cups": "string o null",
+      "fhir_imaging_study": null,
+      "profesional": "string o null",
+      "cargo_profesional": "string o null",
+      "registro_profesional": "string o null",
+      "institucion": "string o null",
+      "resultados": [
+        {
+          "parametro": "string",
+          "valor": "string",
+          "unidad": "string o null",
+          "referencia": "string o null",
+          "estado": "normal|alto|bajo|sin_dato",
+          "metodo": "string o null",
+          "codigo_cups": "string o null",
+          "nota": "string o null"
+        }
+      ],
+      "notas_clinicas": [],
+      "notas_medico": "string o null",
+      "notas_paciente": "string o null"
+    }
+  ]
+}
+
+REGLAS DETALLADAS:
+1. MULTI-EXAMEN: Si hay varios exámenes distintos, crea un objeto por cada uno.
+2. PROFESIONAL — REGLA ESTRICTA:
+   * Busca en TODO el texto: [ENCABEZADO*], [PIE_DE_PAGINA], [CUERPO_DERECHA — ZONA DE FIRMAS], firmas, sellos.
+   * Usa la sección "=== FIRMAS Y PROFESIONALES DETECTADOS AUTOMÁTICAMENTE ===" si está disponible.
+   * Patrones: "Dr. Nombre", "Bacterióloga: Nombre", "T.P. XXXXX", "Reg. Prof.", "Q.F.", "Elaborado por:".
+   * SIEMPRE copia el profesional en CADA examen del array. NUNCA lo dejes en null si existe en el texto.
+   * La institución viene de "Sede procesamiento", NO del encabezado general.
+3. CUPS — GRANULARIDAD DOS NIVELES:
+   * Nivel examen (campo "codigo_cups" del examen): para RAD, PAT, CARD y paneles LAB con nombre único.
+   * Nivel parámetro (campo "codigo_cups" de cada resultado): para analitos individuales de química/bioquímica.
+   * Si ves un código CUPS explícito en el texto OCR, úsalo. Si no, pon null (el backend lo completará).
+   * En exámenes de imagen los resultados/hallazgos tienen "codigo_cups": null.
+4. IMAGENOLOGÍA (RAD):
+   * Rellena "fhir_imaging_study": {"modalidad_dicom": "DX|CT|MR|US|MG|NM|PT", "region_anatomica": "string"}
+   * Cada hallazgo es un resultado: parametro = nombre del hallazgo, valor = descripción textual.
+5. MICROBIOLOGÍA: cada antibiótico es un resultado separado (parametro="Antibiótico X", valor="S|I|R", metodo="disco|MIC").
+6. notas_medico: resumen técnico para el médico (máx 3 oraciones).
+7. notas_paciente: explicación simple, sin tecnicismos (máx 3 oraciones).
+
+Texto del documento:
+"""
+
+PROMPT_EN = _CONTEXT_EN + """
+
+Analyze the following text which may contain ONE OR MULTIPLE clinical exams in a single document.
+
+CRITICAL INSTRUCTION: Determine if the document contains multiple distinct exams. A distinct exam is one with a different type, even if they share the same date or institution.
+
+**CRITICAL INSTRUCTION FOR TAB LABELS:**
+The "tipo_examen" field will be used as tab title. It must be:
+- Very short (max 25 characters), UPPERCASE, clean.
+Examples: "CHEMISTRY", "LIPID PROFILE", "HEMATOLOGY", "ABDOMINAL US", "CHEST X-RAY", "HEMOGRAM", "TSH", "CYTOLOGY"
+
+Return **ONLY** a valid JSON with this exact structure:
+
+{
+  "profesional_documento": {"nombre": "string or null", "cargo": "string or null", "registro": "string or null"},
+  "institucion_documento": "string or null",
+  "examenes": [
+    {
+      "fecha": "DD/MM/YYYY or null",
+      "tipo_examen": "string SHORT AND IN UPPERCASE",
+      "disciplina": "string",
+      "subcategoria": "string",
+      "fhir_category": "LAB|RAD|PAT|CARD|OT",
+      "region_anatomica": "string or null",
+      "codigo_cups": "string or null",
+      "fhir_imaging_study": null,
+      "profesional": "string or null",
+      "cargo_profesional": "string or null",
+      "registro_profesional": "string or null",
+      "institucion": "string or null",
+      "resultados": [
+        {
+          "parametro": "string",
+          "valor": "string",
+          "unidad": "string or null",
+          "referencia": "string or null",
+          "estado": "normal|alto|bajo|sin_dato",
+          "metodo": "string or null",
+          "codigo_cups": "string or null",
+          "nota": "string or null"
+        }
+      ],
+      "notas_clinicas": [],
+      "notas_medico": "string or null",
+      "notas_paciente": "string or null"
+    }
+  ]
+}
+
+DETAILED RULES:
+1. MULTI-EXAM: Create one object per distinct exam.
+2. PROFESSIONAL — STRICT RULE:
+   * Search the ENTIRE text: [ENCABEZADO*], [PIE_DE_PAGINA], [CUERPO_DERECHA — ZONA DE FIRMAS], signatures, stamps.
+   * Use the "=== FIRMAS Y PROFESIONALES DETECTADOS AUTOMÁTICAMENTE ===" section if available.
+   * Patterns: "Dr. Name", "Bacteriologist: Name", "T.P. XXXXX", "Reg. Prof.", "Q.F.", "Prepared by:".
+   * ALWAYS copy the professional into EVERY exam in the array. NEVER leave it null if found.
+   * Institution comes from "Sede procesamiento", NOT from the general header.
+3. CUPS — TWO-LEVEL GRANULARITY:
+   * Exam level ("codigo_cups" on exam): for RAD, PAT, CARD and single-name LAB panels.
+   * Parameter level ("codigo_cups" on each result): for individual analytes in chemistry/biochemistry.
+   * If a CUPS code is explicitly visible in OCR text, use it. Otherwise set null (backend completes it).
+   * Imaging result findings have "codigo_cups": null.
+4. IMAGING (RAD):
+   * Fill "fhir_imaging_study": {"modalidad_dicom": "DX|CT|MR|US|MG|NM|PT", "region_anatomica": "string"}
+   * Each finding is a result: parametro = finding name, valor = textual description.
+5. MICROBIOLOGY: each antibiotic is a separate result (parametro="Antibiotic X", valor="S|I|R", metodo="disk|MIC").
+6. notas_medico: technical summary for the physician (max 3 sentences).
+7. notas_paciente: simple explanation, no jargon (max 3 sentences).
+
+Document text:
+"""
+
+
+# ─── Página HTML ──────────────────────────────────────────────
+@app.get("/")
+def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+# ─── Proxy de archivos ────────────────────────────────────────
+@app.get("/proxy-file")
+def proxy_file(url: str):
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LabAnalyzer/2.0)"},
+            timeout=30,
+            stream=True,
+        )
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        if url.lower().split("?")[0].endswith(".pdf"):
+            content_type = "application/pdf"
+
+        def iter_content():
+            for chunk in resp.iter_content(chunk_size=8192):
+                yield chunk
+
+        return StreamingResponse(
+            iter_content(),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "public, max-age=300",
+                "X-Frame-Options": "",
+                "Content-Security-Policy": "",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo obtener el archivo: {e}")
+
+
+# ─── Buscar archivos por identificación ───────────────────────
+@app.post("/archivos")
+def buscar_archivos(req: BuscarArchivosRequest):
+    db = OracleEnterpriseConnection()
+    if not db.connect():
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo conectar a Oracle. Ejecuta 'python conexion.py --setup'.",
+        )
+    try:
+        rows = db.execute_query(SQL_ARCHIVOS, {"identificacion": req.identificacion})
+        if rows is None:
+            raise HTTPException(status_code=500, detail="Error ejecutando consulta Oracle")
+        if len(rows) == 0:
+            return JSONResponse(content={"archivos": [], "identificacion": req.identificacion})
+
+        archivos = []
+        for row in rows:
+            (id_archivo, fecha_cargue, id_usuario, url,
+             nombre_archivo, identificacion,
+             nombre_alternativo, ya_analizado, analisis_clob) = row
+
+            fecha_str = (
+                fecha_cargue.strftime("%d/%m/%Y %H:%M")
+                if isinstance(fecha_cargue, datetime)
+                else (str(fecha_cargue) if fecha_cargue else None)
+            )
+
+            analisis_str = None
+            if analisis_clob is not None:
+                try:
+                    analisis_str = analisis_clob.read() if hasattr(analisis_clob, "read") else str(analisis_clob)
+                except Exception:
+                    analisis_str = str(analisis_clob)
+
+            archivos.append({
+                "id_archivo":         int(id_archivo) if id_archivo else None,
+                "fecha_cargue":       fecha_str,
+                "id_usuario":         int(id_usuario) if id_usuario else None,
+                "url":                str(url) if url else None,
+                "nombre_archivo":     str(nombre_archivo) if nombre_archivo else "Archivo sin nombre",
+                "identificacion":     str(identificacion) if identificacion else None,
+                "nombre_alternativo": str(nombre_alternativo) if nombre_alternativo else None,
+                "ya_analizado":       bool(ya_analizado),
+                "analisis":           analisis_str,
+            })
+
+        return JSONResponse(content={
+            "archivos": archivos,
+            "identificacion": req.identificacion,
+            "total": len(archivos),
+        })
+    finally:
+        db.close_connection()
+
+
+# ─── Guardar análisis en Oracle ───────────────────────────────
+@app.post("/save-analysis")
+def save_analysis(req: SaveAnalysisRequest):
+    db = OracleEnterpriseConnection()
+    if not db.connect():
+        raise HTTPException(status_code=503, detail="No se pudo conectar a Oracle.")
+    try:
+        result = db.execute_query(
+            SQL_SAVE_ANALYSIS,
+            {
+                "nombre_alternativo": req.nombre_alternativo,
+                "analisis":           req.analisis,
+                "id_archivo":         req.id_archivo,
+            },
+        )
+        if result is None:
+            raise HTTPException(status_code=500, detail="Error guardando análisis en Oracle")
+
+        return JSONResponse(content={
+            "ok": True,
+            "id_archivo": req.id_archivo,
+            "nombre_alternativo": req.nombre_alternativo,
+        })
+    finally:
+        db.close_connection()
+
+
+# ─── Utilidades ───────────────────────────────────────────────
+def build_nombre_alternativo(tipo_examen: str, fecha: str) -> str:
+    nombre = tipo_examen or "Examen"
+    nombre = unicodedata.normalize("NFD", nombre)
+    nombre = "".join(c for c in nombre if unicodedata.category(c) != "Mn")
+    nombre = re.sub(r"[^a-zA-Z0-9\s]", "", nombre).strip()
+    nombre = re.sub(r"\s+", "_", nombre)
+
+    fecha_part = ""
+    if fecha:
+        try:
+            d = datetime.strptime(fecha.split(" ")[0], "%d/%m/%Y")
+            fecha_part = d.strftime("%Y%m%d")
+        except Exception:
+            fecha_part = re.sub(r"[^0-9]", "", fecha)[:8]
+
+    if fecha_part:
+        return f"{nombre}_{fecha_part}"
+    return nombre
+
+
+def download_file(url: str) -> tuple[bytes, str]:
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LabAnalyzer/2.0)"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.content, resp.headers.get("content-type", "")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error descargando archivo: {e}")
+
+
+def get_file_extension(content_type: str, url: str = "") -> str:
+    ct = content_type.lower()
+    if "pdf" in ct: return "pdf"
+    if "png" in ct: return "png"
+    if "jpeg" in ct or "jpg" in ct: return "jpg"
+    u = url.lower().split("?")[0]
+    if u.endswith(".pdf"):            return "pdf"
+    if u.endswith(".png"):            return "png"
+    if u.endswith((".jpg", ".jpeg")): return "jpg"
+    return "jpg"
+
+
+def is_pdf_encrypted(file_bytes: bytes) -> bool:
+    try:
+        with pikepdf.open(io.BytesIO(file_bytes)):
+            return False
+    except pikepdf.PasswordError:
+        return True
+    except Exception:
+        return False
+
+
+def unlock_pdf(file_bytes: bytes, password: str) -> bytes:
+    try:
+        buf_out = io.BytesIO()
+        with pikepdf.open(io.BytesIO(file_bytes), password=password) as pdf:
+            pdf.save(buf_out)
+        return buf_out.getvalue()
+    except pikepdf.PasswordError:
+        raise HTTPException(
+            status_code=400,
+            detail="Contraseña incorrecta para el PDF. Verifica e intenta de nuevo.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error procesando PDF protegido: {e}")
+
+
+def extract_text_native_pdf(file_bytes: bytes) -> str:
+    """
+    Extrae texto de PDF preservando zonas clave con etiquetas explícitas.
+
+    Estrategia para capturar firmas/profesionales en documentos de laboratorio colombianos:
+    - Divide la página en 4 zonas: encabezado, cuerpo-izq, cuerpo-der, pie
+    - La zona DERECHA es donde van las firmas en docs colombianos
+    - Detecta bloques de firma: "Firma Responsable", CC, T.P., cargo
+    - Extrae "SEDE DE PROCESAMIENTO" y "RAZÓN SOCIAL" de las zonas de firma
+    - Genera bloque === FIRMAS DETECTADAS === al inicio del texto para el LLM
+    """
+
+    # ── Patrón firma: línea que introduce bloque de firma ──────────────────
+    _FIRMA_TRIGGER = re.compile(
+        r"Firma\s+Responsable|Firma\s+de[l]?\s+(?:M[eé]dico|Profesional|Responsable)|"
+        r"Validado\s+por|Autorizado\s+por|Revisado\s+por|Firmado\s+por|"
+        r"Elaborado\s+por|Realizado\s+por|Atendido\s+por",
+        re.IGNORECASE,
+    )
+
+    # ── Patrón cargo médico PRECISO (excluye "Responsable" solo) ──────────
+    _CARGO_RE = re.compile(
+        r"\b(?:Bacteriólog[ao]|Bacteriolog[ao]|Radiólog[ao]|Radiolog[ao]|"
+        r"Ecógrafo|Ecografo|Patólog[ao]|Patolog[ao]|Q\.F\.|Q\.B\.F\.|"
+        r"Químico\s+Farmac|Quimico\s+Farmac|Médic[ao]|Medic[ao]|"
+        r"Director(?:a)?\s+M[eé]dic[ao]|Directora?\s+de\s+Laboratorio|"
+        r"Jefe\s+de\s+Laboratorio|Direcci[oó]n\s+M[eé]dic[ao]|"
+        r"Especialista|Internista|Cirujano|Ginecólog[ao]|Ginecologo|"
+        r"Pediatra|Cardiólog[ao]|Cardiologo|Neurólog[ao]|Neurologo|"
+        r"Ortopedista|Traumatólog[ao]|Traumatologo|"
+        r"Laboratorio\s+Cl[ií]nico)\b",
+        re.IGNORECASE,
+    )
+
+    # ── Patrón CC / T.P. / Reg. ────────────────────────────────────────────
+    _ID_RE = re.compile(
+        r"\b(?:CC|C\.C\.|T\.P\.|TP|Tarjeta\s+Prof|Reg\.?\s*Prof|R\.M\.|C\.M\.|M\.P\.)"
+        r"\s*\.?\s*(\d[\d\.\-]*)",
+        re.IGNORECASE,
+    )
+
+    # ── Patrón sede de procesamiento ───────────────────────────────────────
+    _SEDE_RE = re.compile(
+        r"SEDE\s+DE\s+PROCESAMIENTO\s*[:\-]?\s*(.+)|"
+        r"RAZ[OÓ]N\s+SOCIAL\s*[:\-]?\s*(.+)|"
+        r"(?:^|\n)Sede\s*[:\-]\s*(.+)|"
+        r"Instituci[oó]n\s*[:\-]\s*(.+)",
+        re.IGNORECASE,
+    )
+
+    # ── Nombre: 2-4 palabras con mayúscula inicial, sin dígitos ───────────
+    _NOMBRE_RE = re.compile(
+        r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de\s+|del?\s+|la\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){1,3}",
+    )
+
+    def extract_firma_blocks(raw_lines: list) -> list:
+        """
+        Dado listado de líneas de zona de firma/derecha,
+        detecta bloques de firma y extrae nombre, cargo, registro, sede.
+        """
+        blocks = []
+        i = 0
+        while i < len(raw_lines):
+            line = raw_lines[i].strip()
+            is_trigger = _FIRMA_TRIGGER.search(line)
+            is_cargo   = _CARGO_RE.search(line)
+            is_id      = _ID_RE.search(line)
+
+            if is_trigger or is_cargo or is_id:
+                ctx_start = max(0, i - 3)
+                ctx_end   = min(len(raw_lines), i + 8)
+                ctx_lines = [l.strip() for l in raw_lines[ctx_start:ctx_end] if l.strip()]
+                ctx_text  = "\n".join(ctx_lines)
+
+                nombre = None
+                cargo  = None
+                reg    = None
+                sede   = None
+
+                # 1. Buscar CC/TP → el nombre suele estar en la línea ANTERIOR
+                id_m = _ID_RE.search(ctx_text)
+                if id_m:
+                    reg = id_m.group(0).strip()
+                    # encontrar índice en ctx_lines de la línea con el ID
+                    id_line_idx = next(
+                        (j for j, l in enumerate(ctx_lines) if _ID_RE.search(l)), None
+                    )
+                    if id_line_idx is not None and id_line_idx > 0:
+                        prev = ctx_lines[id_line_idx - 1]
+                        # solo si la línea anterior no es trigger de firma
+                        if not _FIRMA_TRIGGER.search(prev):
+                            nm = _NOMBRE_RE.search(prev)
+                            if nm:
+                                nombre = nm.group(0).strip()
+
+                # 2. Buscar cargo en el contexto
+                cargo_m = _CARGO_RE.search(ctx_text)
+                if cargo_m:
+                    cargo = cargo_m.group(0).strip()
+
+                # 3. Si no hay nombre aún, buscar en líneas post-trigger
+                if not nombre:
+                    for j, l in enumerate(ctx_lines):
+                        if _FIRMA_TRIGGER.search(l):
+                            # Nombre puede estar en misma línea (a la derecha de "Firma Responsable")
+                            rest = l[_FIRMA_TRIGGER.search(l).end():]
+                            nm = _NOMBRE_RE.search(rest)
+                            if nm:
+                                nombre = nm.group(0).strip()
+                            if not nombre:
+                                # Buscar en las siguientes 3 líneas, salteando líneas de solo cargo
+                                for k in range(j + 1, min(j + 4, len(ctx_lines))):
+                                    candidate = ctx_lines[k]
+                                    # Evitar capturar líneas de sede como nombre
+                                    if _SEDE_RE.search(candidate):
+                                        continue
+                                    nm2 = _NOMBRE_RE.search(candidate)
+                                    if nm2:
+                                        nombre = nm2.group(0).strip()
+                                        break
+                            break
+
+                # 4. SEDE DE PROCESAMIENTO en el contexto
+                sede_m = _SEDE_RE.search(ctx_text)
+                if sede_m:
+                    sede = next((g for g in sede_m.groups() if g), None)
+                    if sede:
+                        sede = sede.strip()
+
+                if nombre or cargo or reg:
+                    # Evitar duplicados: no agregar si ya existe igual nombre+cargo
+                    dup = any(
+                        b.get("nombre") == nombre and b.get("cargo") == cargo
+                        for b in blocks
+                    )
+                    if not dup:
+                        blocks.append({
+                            "nombre":   nombre,
+                            "cargo":    cargo,
+                            "registro": reg,
+                            "sede_procesamiento": sede,
+                            "context":  ctx_text,
+                        })
+            i += 1
+        return blocks
+
+    try:
+        all_pages_text    = []
+        all_firma_blocks  = []
+        all_sedes         = []
+
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                h = page.height
+                w = page.width
+
+                # ── 4 zonas: encabezado / cuerpo-izq / cuerpo-der / pie ────
+                header_box  = (0,     0,        w,     h * 0.12)
+                body_l_box  = (0,     h * 0.12, w / 2, h * 0.88)
+                body_r_box  = (w / 2, h * 0.12, w,     h * 0.88)
+                footer_box  = (0,     h * 0.88, w,     h)
+
+                header_text = (page.within_bbox(header_box).extract_text() or "").strip()
+                body_l_text = (page.within_bbox(body_l_box).extract_text() or "").strip()
+                body_r_text = (page.within_bbox(body_r_box).extract_text() or "").strip()
+                footer_text = (page.within_bbox(footer_box).extract_text() or "").strip()
+
+                # ── Tablas ────────────────────────────────────────────────
+                table_lines = []
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        for row in table:
+                            if row:
+                                line = "  |  ".join(
+                                    str(cell).strip() for cell in row if cell is not None
+                                )
+                                if line.strip():
+                                    table_lines.append(line)
+
+                # ── Armar texto de página con etiquetas ───────────────────
+                page_parts = []
+                label = "[ENCABEZADO_PAG1]" if page_num == 1 else "[ENCABEZADO]"
+                if header_text:
+                    page_parts.append(f"{label}\n{header_text}")
+                if table_lines:
+                    page_parts.append("[TABLA_RESULTADOS]\n" + "\n".join(table_lines))
+                if body_l_text:
+                    page_parts.append(f"[CUERPO_IZQUIERDA]\n{body_l_text}")
+                if body_r_text:
+                    page_parts.append(
+                        f"[CUERPO_DERECHA — ZONA DE FIRMAS Y SELLOS]\n{body_r_text}"
+                    )
+                if footer_text:
+                    page_parts.append(f"[PIE_DE_PAGINA]\n{footer_text}")
+
+                all_pages_text.append("\n".join(page_parts))
+
+                # ── Detectar firmas en zona DERECHA + PIE ─────────────────
+                firma_raw = "\n".join(filter(None, [body_r_text, footer_text]))
+                firma_lines = firma_raw.splitlines()
+                blocks = extract_firma_blocks(firma_lines)
+                all_firma_blocks.extend(blocks)
+
+                # ── Detectar SEDE en todo el texto de la página ────────────
+                full_page = "\n".join(
+                    filter(None, [header_text, body_l_text, body_r_text, footer_text])
+                )
+                for m in _SEDE_RE.finditer(full_page):
+                    val = next((g for g in m.groups() if g), None)
+                    if val:
+                        val = val.strip()
+                        if val and val not in all_sedes:
+                            all_sedes.append(val)
+
+        # ── Construir bloque === FIRMAS DETECTADAS === para el LLM ────────
+        result_parts = []
+        if all_firma_blocks or all_sedes:
+            lines = [
+                "=== FIRMAS Y PROFESIONALES DETECTADOS AUTOMÁTICAMENTE ===",
+                "INSTRUCCIÓN: Usa estos datos para 'profesional', 'cargo_profesional',",
+                "'registro_profesional' e 'institucion' de cada examen.",
+            ]
+            for idx, blk in enumerate(all_firma_blocks, 1):
+                lines.append(f"--- Firma #{idx} ---")
+                if blk.get("nombre"):
+                    lines.append(f"  Nombre profesional : {blk['nombre']}")
+                if blk.get("cargo"):
+                    lines.append(f"  Cargo              : {blk['cargo']}")
+                if blk.get("registro"):
+                    lines.append(f"  Registro/CC/TP     : {blk['registro']}")
+                if blk.get("sede_procesamiento"):
+                    lines.append(f"  Sede procesamiento : {blk['sede_procesamiento']}")
+                lines.append(f"  Contexto:\n{blk['context']}")
+            if all_sedes:
+                lines.append("--- Sedes / Instituciones ---")
+                for s in all_sedes:
+                    lines.append(f"  {s}")
+            lines.append("=== FIN FIRMAS Y PROFESIONALES ===")
+            result_parts.append("\n".join(lines))
+
+        result_parts.extend(all_pages_text)
+        return "\n\n".join(result_parts).strip()
+
+    except Exception as e:
+        print(f"[pdfplumber] Error: {e}")
+        return ""
+
+def extract_text_ocr(file_bytes: bytes, content_type: str, url_file: str) -> str:
+    if not OCR_SPACE_API_KEY:
+        raise HTTPException(status_code=500, detail="Falta OCR_SPACE_API_KEY en .env")
+
+    ext = get_file_extension(content_type, url_file)
+    try:
+        response = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": (f"document.{ext}", file_bytes)},
+            data={
+                "apikey":            OCR_SPACE_API_KEY,
+                "language":          "spa",
+                "isOverlayRequired": False,
+                "OCREngine":         2,
+                "scale":             True,
+                "isTable":           True,
+                "filetype":          ext,
+            },
+            timeout=60,
+        )
+        result = response.json()
+
+        if result.get("IsErroredOnProcessing"):
+            error_msgs = result.get("ErrorMessage", [])
+            partial = result.get("ParsedResults")
+            page_limit_error = any(
+                "maximum page limit" in str(m).lower() or "limit were parsed" in str(m).lower()
+                for m in (error_msgs if isinstance(error_msgs, list) else [error_msgs])
+            )
+            if page_limit_error and partial:
+                text = "\n".join(p.get("ParsedText", "") for p in partial).strip()
+                if text:
+                    return text
+            raise HTTPException(status_code=400, detail=f"OCR error: {error_msgs}")
+
+        parsed = result.get("ParsedResults")
+        if not parsed:
+            raise HTTPException(status_code=400, detail="OCR sin resultados")
+
+        return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error OCR.Space: {e}")
+
+
+def extract_text(file_bytes: bytes, content_type: str, url_file: str) -> str:
+    ext = get_file_extension(content_type, url_file)
+    if ext == "pdf":
+        native_text = extract_text_native_pdf(file_bytes)
+        if len(native_text) >= PDF_MIN_CHARS:
+            print(f"[extracción] Nativo OK ({len(native_text)} chars)")
+            return native_text
+        print(f"[extracción] Nativo insuficiente → OCR")
+        return extract_text_ocr(file_bytes, content_type, url_file)
+    return extract_text_ocr(file_bytes, content_type, url_file)
+
+
+def clean_json(raw: str) -> str:
+    try:
+        start_brace   = raw.find("{")
+        start_bracket = raw.find("[")
+
+        if start_brace == -1 and start_bracket == -1:
+            return raw
+
+        if start_brace == -1:
+            start = start_bracket
+            end   = raw.rfind("]") + 1
+        elif start_bracket == -1:
+            start = start_brace
+            end   = raw.rfind("}") + 1
+        else:
+            if start_brace <= start_bracket:
+                start = start_brace
+                end   = raw.rfind("}") + 1
+            else:
+                start = start_bracket
+                end   = raw.rfind("]") + 1
+
+        return raw[start:end]
+    except Exception:
+        return raw
+
+
+def _extract_professional_fallback(text: str) -> dict:
+    """
+    Extracción de último recurso: lee el bloque === FIRMAS Y PROFESIONALES ===
+    generado por extract_text_native_pdf y devuelve la primera firma encontrada.
+    Si no hay bloque, intenta buscar nombre+CC en la zona derecha del texto.
+    Retorna dict con nombre/cargo/registro o {} si no encuentra nada.
+    """
+    # ── Primero: leer el bloque estructurado que genera extract_text_native_pdf ──
+    block_match = re.search(
+        r"=== FIRMAS Y PROFESIONALES DETECTADOS AUTOMÁTICAMENTE ===(.*?)=== FIN FIRMAS Y PROFESIONALES ===",
+        text, re.DOTALL | re.IGNORECASE,
+    )
+    if block_match:
+        block = block_match.group(1)
+        nombre   = None
+        cargo    = None
+        registro = None
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("Nombre profesional :"):
+                nombre = line.split(":", 1)[1].strip()
+            elif line.startswith("Cargo              :"):
+                cargo = line.split(":", 1)[1].strip()
+            elif line.startswith("Registro/CC/TP     :"):
+                registro = line.split(":", 1)[1].strip()
+            # Solo tomamos la primera firma (Firma #1)
+            if nombre and cargo:
+                break
+        if nombre or cargo:
+            print(f"[prof_fallback] Bloque estructurado: nombre='{nombre}' cargo='{cargo}' reg='{registro}'")
+            return {"nombre": nombre, "cargo": cargo, "registro": registro}
+
+    # ── Segundo: búsqueda en zona derecha del texto ──────────────────────────
+    _CARGO_RE = re.compile(
+        r"\b(?:Bacteriólog[ao]|Bacteriolog[ao]|Radiólog[ao]|Radiolog[ao]|"
+        r"Ecógrafo|Ecografo|Patólog[ao]|Patolog[ao]|Q\.F\.|Q\.B\.F\.| "
+        r"Médic[ao]|Medic[ao]|Director(?:a)?\s+M[eé]dic[ao]|"
+        r"Jefe\s+de\s+Laboratorio|Direcci[oó]n\s+M[eé]dic[ao]|"
+        r"Especialista|Internista|Cirujano|Ginecólog[ao]|Ginecologo|"
+        r"Pediatra|Cardiólog[ao]|Cardiologo|Neurólog[ao]|Neurologo|"
+        r"Ortopedista|Traumatólog[ao])\b",
+        re.IGNORECASE,
+    )
+    _ID_RE = re.compile(
+        r"\b(?:CC|C\.C\.|T\.P\.|Tarjeta\s+Prof|Reg\.?\s*Prof|R\.M\.|M\.P\.)"
+        r"\s*\.?\s*(\d[\d\.\-]*)",
+        re.IGNORECASE,
+    )
+    _NOMBRE_RE = re.compile(
+        r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de\s+|del?\s+|la\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){1,3}",
+    )
+
+    # Buscar zona derecha en el texto
+    zona_der = ""
+    der_match = re.search(
+        r"\[CUERPO_DERECHA.*?\](.*?)(?=\[|$)", text, re.DOTALL
+    )
+    if der_match:
+        zona_der = der_match.group(1)
+    search_text = zona_der or text
+
+    nombre_found   = None
+    cargo_found    = None
+    registro_found = None
+
+    lines = search_text.splitlines()
+    for i, line in enumerate(lines):
+        id_m = _ID_RE.search(line)
+        if id_m:
+            registro_found = id_m.group(0).strip()
+            # Nombre en línea anterior
+            if i > 0:
+                prev = lines[i - 1].strip()
+                nm = _NOMBRE_RE.search(prev)
+                if nm and not _CARGO_RE.search(prev):
+                    nombre_found = nm.group(0).strip()
+            # Cargo en línea siguiente
+            if i < len(lines) - 1:
+                nxt = lines[i + 1].strip()
+                cm = _CARGO_RE.search(nxt)
+                if cm:
+                    cargo_found = cm.group(0).strip()
+            break
+
+    # Si no por CC/TP, buscar nombre justo antes del cargo
+    if not nombre_found:
+        for i, line in enumerate(lines):
+            cm = _CARGO_RE.search(line)
+            if cm:
+                cargo_found = cm.group(0).strip()
+                if i > 0:
+                    prev = lines[i - 1].strip()
+                    nm = _NOMBRE_RE.search(prev)
+                    if nm:
+                        nombre_found = nm.group(0).strip()
+                break
+
+    if nombre_found or cargo_found:
+        print(f"[prof_fallback] Regex zona-der: nombre='{nombre_found}' cargo='{cargo_found}'")
+        return {"nombre": nombre_found, "cargo": cargo_found, "registro": registro_found}
+    return {}
+
+
+def normalize_to_multi(raw_parsed, id_usuario: int, id_archivo, source_text: str = "") -> dict:
+    """
+    Normaliza cualquier respuesta del LLM al formato multi-examen.
+    Hereda profesional/institución del documento a los exámenes que no los tengan.
+    Si el LLM no capturó el profesional, intenta recuperarlo del texto fuente.
+    Añade clasificación FHIR automática si el LLM no la proporcionó.
+    """
+    def fix_exam(exam: dict, prof_doc: dict, inst_doc: str) -> dict:
+        if "notas_clinicas" not in exam:
+            exam["notas_clinicas"] = []
+        if "resultados" not in exam:
+            exam["resultados"] = []
+
+        # Heredar profesional
+        if not exam.get("profesional") and prof_doc.get("nombre"):
+            exam["profesional"]          = prof_doc["nombre"]
+            exam["cargo_profesional"]    = exam.get("cargo_profesional") or prof_doc.get("cargo")
+            exam["registro_profesional"] = exam.get("registro_profesional") or prof_doc.get("registro")
+
+        # Heredar institución
+        if not exam.get("institucion") and inst_doc:
+            exam["institucion"] = inst_doc
+
+        # Completar clasificación FHIR si no la trajo el LLM
+        if not exam.get("fhir_category") or not exam.get("disciplina"):
+            clasif = clasificar_examen(exam.get("tipo_examen",""))
+            exam.setdefault("disciplina",    clasif["disciplina"])
+            exam.setdefault("subcategoria",  clasif["subcategoria"])
+            exam.setdefault("fhir_category", clasif["fhir_category"])
+
+        fhir_cat = exam.get("fhir_category", "LAB")
+
+        # ── CUPS a nivel de EXAMEN ──────────────────────────────────────────
+        cups_exam = asignar_cups(
+            tipo_examen     = exam.get("tipo_examen", ""),
+            fhir_category   = fhir_cat,
+            codigo_cups_llm = exam.get("codigo_cups") or None,
+        )
+        exam["codigo_cups"] = cups_exam["codigo_cups"]
+        exam["nombre_cups"] = cups_exam["nombre_cups"]
+        exam["cups_score"]  = cups_exam["cups_score"]
+        exam["cups_fuente"] = cups_exam["cups_fuente"]
+
+        # ── CUPS a nivel de PARÁMETRO ──────────────────────────────────────
+        # Sólo para LAB (química, bioquímica, endocrinología, hematología, etc.)
+        # Para RAD/PAT/CARD el CUPS ya está en el examen; los resultados son hallazgos.
+        for resultado in exam["resultados"]:
+            if not isinstance(resultado, dict):
+                continue
+            # Si el LLM ya puso un código explícito, validarlo y respetarlo
+            cups_llm_param = resultado.get("codigo_cups") or None
+            if cups_llm_param:
+                hit = _CUPS_CATALOG[_CUPS_CATALOG["CODIGO_CUPS"] == str(cups_llm_param).strip()]
+                if not hit.empty:
+                    r = hit.iloc[0]
+                    resultado["codigo_cups"]  = r.CODIGO_CUPS
+                    resultado["nombre_cups"]  = r.NOMBRE_PROCEDIMIENTO
+                    resultado["cups_score"]   = 1.0
+                    resultado["cups_fuente"]  = "llm"
+                    continue
+
+            # Para RAD, PAT, CARD: hallazgos sin CUPS propio → dejar null
+            if fhir_cat in ("RAD", "PAT", "CARD", "OT"):
+                resultado.setdefault("codigo_cups", None)
+                resultado.setdefault("nombre_cups", None)
+                resultado.setdefault("cups_score",  0.0)
+                resultado.setdefault("cups_fuente", "n/a")
+                continue
+
+            # Para LAB: buscar CUPS por nombre del parámetro
+            nombre_param = resultado.get("parametro", "")
+            if nombre_param:
+                cups_param = asignar_cups(
+                    tipo_examen     = nombre_param,
+                    fhir_category   = fhir_cat,
+                    codigo_cups_llm = None,
+                    score_min       = 0.25,   # umbral ligeramente más alto para parámetros
+                )
+                resultado["codigo_cups"] = cups_param["codigo_cups"]
+                resultado["nombre_cups"] = cups_param["nombre_cups"]
+                resultado["cups_score"]  = cups_param["cups_score"]
+                resultado["cups_fuente"] = cups_param["cups_fuente"]
+            else:
+                resultado.setdefault("codigo_cups", None)
+                resultado.setdefault("nombre_cups", None)
+                resultado.setdefault("cups_score",  0.0)
+                resultado.setdefault("cups_fuente", "sin_match")
+
+        # ── fhir_imaging_study: asegurar campo presente ────────────────────
+        if fhir_cat == "RAD" and not exam.get("fhir_imaging_study"):
+            # Inferir modalidad DICOM del tipo de examen
+            tipo = (exam.get("tipo_examen") or "").lower()
+            if "rx" in tipo or "radiograf" in tipo or "rayos" in tipo:
+                mod = "DX"
+            elif "tac" in tipo or "tomograf" in tipo or "ct" in tipo:
+                mod = "CT"
+            elif "resonancia" in tipo or "mri" in tipo or " rm " in tipo:
+                mod = "MR"
+            elif "eco" in tipo or "ultrasonido" in tipo or "us " in tipo:
+                mod = "US"
+            elif "mamograf" in tipo:
+                mod = "MG"
+            elif "pet" in tipo or "nuclear" in tipo or "gammagraf" in tipo:
+                mod = "NM"
+            else:
+                mod = "OT"
+            exam["fhir_imaging_study"] = {
+                "modalidad_dicom": mod,
+                "region_anatomica": exam.get("region_anatomica") or None,
+            }
+        elif fhir_cat != "RAD":
+            exam.setdefault("fhir_imaging_study", None)
+
+        return exam
+
+    examenes = []
+    prof_doc = {}
+    inst_doc = ""
+
+    if isinstance(raw_parsed, list):
+        examenes = raw_parsed
+
+    elif isinstance(raw_parsed, dict):
+        prof_doc = raw_parsed.get("profesional_documento") or {}
+        if not isinstance(prof_doc, dict):
+            prof_doc = {}
+        inst_doc = raw_parsed.get("institucion_documento") or ""
+
+        if "examenes" in raw_parsed:
+            examenes = raw_parsed["examenes"]
+        else:
+            legacy = dict(raw_parsed)
+            if not prof_doc.get("nombre") and legacy.get("profesional"):
+                prof_doc = {"nombre": legacy["profesional"], "cargo": None, "registro": None}
+            if not inst_doc and legacy.get("institucion"):
+                inst_doc = legacy["institucion"]
+            examenes = [legacy]
+
+    examenes = [fix_exam(e, prof_doc, inst_doc) for e in examenes if isinstance(e, dict)]
+
+    # ── Fallback: si el LLM no capturó el profesional, intentar extraerlo del texto ──
+    if source_text and not prof_doc.get("nombre"):
+        fallback = _extract_professional_fallback(source_text)
+        if fallback.get("nombre") or fallback.get("cargo"):
+            prof_doc = fallback
+            # Propagar a todos los exámenes que aún no tengan profesional
+            for exam in examenes:
+                if not exam.get("profesional"):
+                    exam["profesional"]          = fallback.get("nombre")
+                    exam["cargo_profesional"]    = exam.get("cargo_profesional") or fallback.get("cargo")
+                    exam["registro_profesional"] = exam.get("registro_profesional") or fallback.get("registro")
+
+    # ── Fallback sede: extraer SEDE DE PROCESAMIENTO del bloque de firmas ──
+    # y sobreescribir institucion_documento si vino del encabezado genérico
+    if source_text:
+        _SEDE_BLOCK_RE = re.compile(
+            r"Sede procesamiento\s*:\s*(.+)", re.IGNORECASE
+        )
+        sede_matches = _SEDE_BLOCK_RE.findall(source_text)
+        if sede_matches:
+            # Usar la primera sede de procesamiento encontrada como institución
+            primary_sede = sede_matches[0].strip()
+            # Propagar a exámenes que no tengan institución propia
+            for exam in examenes:
+                if not exam.get("institucion"):
+                    exam["institucion"] = primary_sede
+            # También actualizar institucion_documento si está vacía o es encabezado
+            if not inst_doc:
+                inst_doc = primary_sede
+
+    return {
+        "profesional_documento": prof_doc if prof_doc else None,
+        "institucion_documento": inst_doc or None,
+        "examenes":              examenes,
+        "id_usuario":            id_usuario,
+        "id_archivo":            id_archivo,
+        "multi":                 len(examenes) > 1,
+    }
+
+
+# ─── Verificar cifrado ────────────────────────────────────────
+@app.post("/check-pdf")
+def check_pdf(req: AnalyzeRequest):
+    file_bytes, content_type = download_file(req.url)
+    ext = get_file_extension(content_type, req.url)
+    if ext != "pdf":
+        return JSONResponse(content={"encrypted": False})
+    return JSONResponse(content={"encrypted": is_pdf_encrypted(file_bytes)})
+
+
+# ─── Analizar documento ───────────────────────────────────────
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="Falta GROQ_API_KEY en .env")
+
+    # ══ GUARDA ANTI-REPROCESAMIENTO ══════════════════════════
+    # Si el archivo ya tiene análisis en BD y no se fuerza el reprocesamiento,
+    # devolver el análisis almacenado directamente sin gastar tokens LLM.
+    if req.id_archivo and not req.force_reprocess:
+        db = OracleEnterpriseConnection()
+        already_analyzed = False
+        stored_result    = None
+        if db.connect():
+            try:
+                rows = db.execute_query(SQL_CHECK_ANALIZADO, {"id_archivo": req.id_archivo})
+                if rows:
+                    clob = rows[0][0]
+                    stored_str = clob.read() if hasattr(clob, "read") else str(clob)
+                    if stored_str and stored_str.strip():
+                        already_analyzed = True
+                        stored_result    = json.loads(stored_str)
+            except Exception as e:
+                print(f"[analyze] Advertencia al verificar análisis previo: {e}")
+            finally:
+                db.close_connection()
+
+        if already_analyzed and stored_result:
+            print(f"[analyze] id_archivo={req.id_archivo} ya analizado → devolviendo caché")
+            # Retroactivamente asignar CUPS (examen + parámetros) si el análisis guardado no los tiene
+            examenes_cached = stored_result.get("examenes", [])
+            for exam in examenes_cached:
+                fhir_cat = exam.get("fhir_category", "LAB")
+
+                # CUPS nivel examen
+                if not exam.get("codigo_cups"):
+                    cups = asignar_cups(
+                        tipo_examen     = exam.get("tipo_examen", ""),
+                        fhir_category   = fhir_cat,
+                        codigo_cups_llm = None,
+                    )
+                    exam["codigo_cups"] = cups["codigo_cups"]
+                    exam["nombre_cups"] = cups["nombre_cups"]
+                    exam["cups_score"]  = cups["cups_score"]
+                    exam["cups_fuente"] = cups["cups_fuente"]
+
+                # CUPS nivel parámetro (sólo LAB)
+                for resultado in exam.get("resultados", []):
+                    if not isinstance(resultado, dict):
+                        continue
+                    if fhir_cat not in ("RAD", "PAT", "CARD", "OT") and not resultado.get("codigo_cups"):
+                        nombre_param = resultado.get("parametro", "")
+                        if nombre_param:
+                            cups_p = asignar_cups(
+                                tipo_examen     = nombre_param,
+                                fhir_category   = fhir_cat,
+                                codigo_cups_llm = None,
+                                score_min       = 0.25,
+                            )
+                            resultado["codigo_cups"] = cups_p["codigo_cups"]
+                            resultado["nombre_cups"] = cups_p["nombre_cups"]
+                            resultado["cups_score"]  = cups_p["cups_score"]
+                            resultado["cups_fuente"] = cups_p["cups_fuente"]
+
+                # fhir_imaging_study retroactivo para RAD
+                if fhir_cat == "RAD" and not exam.get("fhir_imaging_study"):
+                    tipo = (exam.get("tipo_examen") or "").lower()
+                    if "rx" in tipo or "radiograf" in tipo:   mod = "DX"
+                    elif "tac" in tipo or "tomograf" in tipo: mod = "CT"
+                    elif "resonancia" in tipo or "mri" in tipo: mod = "MR"
+                    elif "eco" in tipo or "ultrasonido" in tipo: mod = "US"
+                    elif "mamograf" in tipo: mod = "MG"
+                    elif "pet" in tipo or "nuclear" in tipo:  mod = "NM"
+                    else: mod = "OT"
+                    exam["fhir_imaging_study"] = {
+                        "modalidad_dicom": mod,
+                        "region_anatomica": exam.get("region_anatomica") or None,
+                    }
+
+            stored_result["cached"] = True
+            return JSONResponse(content=stored_result)
+    # ═════════════════════════════════════════════════════════
+
+    # 1. Descargar
+    file_bytes, content_type = download_file(req.url)
+    ext = get_file_extension(content_type, req.url)
+
+    # 2. Desbloquear si cifrado
+    if ext == "pdf":
+        if is_pdf_encrypted(file_bytes):
+            if not req.password:
+                raise HTTPException(status_code=423, detail="PDF_ENCRYPTED")
+            file_bytes = unlock_pdf(file_bytes, req.password)
+
+    # 3. Extraer texto
+    text = extract_text(file_bytes, content_type, req.url)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No se pudo leer el documento")
+
+    # 4. LLM
+    prompt = PROMPT_EN if (req.output_lang or "es").lower() == "en" else PROMPT_ES
+    client = Groq(api_key=GROQ_API_KEY)
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt + text}],
+            temperature=0,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en Groq: {e}")
+
+    raw = completion.choices[0].message.content.strip()
+
+    # 5. Parsear y normalizar al formato multi-examen
+    try:
+        raw_parsed = json.loads(clean_json(raw))
+        result = normalize_to_multi(raw_parsed, req.id_usuario, req.id_archivo, source_text=text)
+
+        examenes = result["examenes"]
+
+        # 6. Generar nombre_alternativo
+        if len(examenes) == 1:
+            nombre_alt = build_nombre_alternativo(
+                examenes[0].get("tipo_examen", "Examen"),
+                examenes[0].get("fecha", ""),
+            )
+        else:
+            primera_fecha = next((e.get("fecha", "") for e in examenes if e.get("fecha")), "")
+            nombre_alt = build_nombre_alternativo(
+                f"MultiExamen_{len(examenes)}",
+                primera_fecha,
+            )
+
+        result["nombre_alternativo"] = nombre_alt
+
+
+        result["cached"] = False
+        return JSONResponse(content=result)
+
+    except Exception as ex:
+        return JSONResponse(content={
+            "examenes":    [],
+            "id_usuario":  req.id_usuario,
+            "id_archivo":  req.id_archivo,
+            "multi":       False,
+            "cached":      False,
+            "error":       "No se pudo parsear JSON",
+            "raw_output":  raw,
+        })

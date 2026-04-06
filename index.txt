@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LabAnalyzer</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    :root{
+      --bg:#eef2f7;--surf:#fff;--surf2:#f5f8fc;--border:#dde4ed;
+      --acc:#1a6fdb;--acc2:#5b21b6;--ok:#059669;--warn:#d97706;--err:#dc2626;
+      --txt:#0d1929;--txt2:#3d5068;--muted:#8fa3bc;--r:13px;
+      --fD:'Syne',sans-serif;--fB:'DM Sans',sans-serif;--fM:'DM Mono',monospace;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--txt);font-family:var(--fB);min-height:100vh}
+    body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+      background:radial-gradient(ellipse 60% 40% at 90% -5%,rgba(26,111,219,.08) 0%,transparent 55%),
+                 radial-gradient(ellipse 40% 50% at 0% 110%,rgba(91,33,182,.05) 0%,transparent 50%)}
+    .wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:28px 20px 80px}
+
+    /* ── HEADER ── */
+    header{display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:26px;padding-bottom:16px;border-bottom:1.5px solid var(--border)}
+    .hL{display:flex;align-items:center;gap:12px}
+    .logo{height:36px;display:flex;align-items:center;flex-shrink:0}
+    .logo img{height:36px;width:auto;display:block}
+    .logoTxt h1{font-family:var(--fD);font-weight:800;font-size:20px;line-height:1}
+    .logoTxt small{font-family:var(--fM);font-size:10px;color:var(--muted);letter-spacing:.07em}
+    .langT{display:flex;background:var(--surf);border:1.5px solid var(--border);border-radius:8px;overflow:hidden}
+    .lBtn{padding:5px 14px;border:none;background:transparent;font-family:var(--fM);font-size:11px;
+      font-weight:500;cursor:pointer;color:var(--muted);transition:all .2s;letter-spacing:.05em}
+    .lBtn.on{background:var(--acc);color:#fff}
+    .lBtn:hover:not(.on){background:var(--surf2);color:var(--txt)}
+
+    /* ── LAYOUT ── */
+    .layout{display:grid;grid-template-columns:var(--left-w,360px) 1fr;gap:18px;align-items:start;transition:grid-template-columns .3s ease}
+    .layout.left-collapsed{grid-template-columns:44px 1fr}
+    @media(max-width:820px){.layout{grid-template-columns:1fr}.layout.left-collapsed{grid-template-columns:1fr}}
+    .leftPanel{display:flex;flex-direction:column;gap:14px;min-width:0;transition:all .3s ease}
+    .rightPanel{display:flex;flex-direction:column;gap:14px;min-width:0}
+
+    /* collapse toggle button */
+    .leftCollapseBtn{position:absolute;top:50%;right:-14px;transform:translateY(-50%);
+      width:28px;height:28px;border-radius:50%;background:var(--surf);
+      border:1.5px solid var(--border);box-shadow:0 2px 8px rgba(13,25,41,.1);
+      display:flex;align-items:center;justify-content:center;cursor:pointer;
+      font-size:12px;color:var(--muted);transition:all .2s;z-index:10;flex-shrink:0}
+    .leftCollapseBtn:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .leftPanelWrap{position:relative;display:flex;flex-direction:column;gap:14px;min-width:0}
+
+    /* when collapsed: hide card contents, show only icon strip */
+    .layout.left-collapsed .leftPanelWrap .card{overflow:hidden;padding:10px 0}
+    .layout.left-collapsed .leftPanelWrap .card > *{opacity:0;pointer-events:none}
+    .layout.left-collapsed .leftCollapseBtn{right:-14px}
+    .layout.left-collapsed .leftCollapseIcon{transform:rotate(180deg)}
+
+    /* ── CARD ── */
+    .card{background:var(--surf);border:1.5px solid var(--border);border-radius:var(--r);
+      padding:18px 20px;box-shadow:0 2px 10px rgba(13,25,41,.05)}
+    .cardTitle{font-family:var(--fM);font-size:10px;color:var(--muted);
+      letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px}
+
+    /* ── SEARCH ── */
+    .searchRow{display:flex;gap:8px}
+    .fGroup{display:flex;flex-direction:column;gap:5px;flex:1}
+    label{font-size:10px;font-family:var(--fM);color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+    input[type=text],input[type=number]{background:var(--bg);border:1.5px solid var(--border);
+      border-radius:8px;color:var(--txt);font-family:var(--fM);font-size:13px;
+      padding:9px 13px;width:100%;outline:none;transition:border-color .2s,box-shadow .2s}
+    input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(26,111,219,.1)}
+    input::placeholder{color:var(--muted);opacity:.5}
+    .btnSearch{height:38px;padding:0 14px;border:none;border-radius:8px;
+      background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;
+      font-family:var(--fM);font-size:12px;font-weight:600;cursor:pointer;
+      box-shadow:0 3px 12px rgba(26,111,219,.28);transition:all .2s;
+      display:flex;align-items:center;gap:6px;align-self:flex-end;white-space:nowrap}
+    .btnSearch:hover{transform:translateY(-1px)}
+    .btnSearch:disabled{opacity:.4;cursor:not-allowed;transform:none}
+    .spn{width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;
+      border-radius:50%;animation:spin .7s linear infinite;display:none}
+    .loading .spn{display:block}.loading .sIco{display:none}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* ── FILE LIST ── */
+    .fileList{display:flex;flex-direction:column;gap:7px;max-height:460px;overflow-y:auto;
+      scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+    .emptyState{text-align:center;padding:28px 14px;color:var(--muted)}
+    .emptyState .bigEm{font-size:36px;margin-bottom:8px}
+    .emptyState p{font-family:var(--fM);font-size:11px;line-height:1.6}
+    .fileItem{display:flex;align-items:center;gap:10px;padding:10px 12px;
+      border:1.5px solid var(--border);border-radius:9px;cursor:pointer;
+      background:var(--surf2);transition:all .2s;position:relative}
+    .fileItem:hover{border-color:rgba(26,111,219,.3);background:#eef5ff;box-shadow:0 2px 8px rgba(26,111,219,.08)}
+    .fileItem.selected{border-color:var(--acc);background:#dbeafe;box-shadow:0 0 0 3px rgba(26,111,219,.12)}
+    .fileItem.analyzing{opacity:.6;pointer-events:none}
+    .fileItem.done{border-color:#6ee7b7;background:#f0fdf4}
+    .fileItem.done:hover{border-color:var(--ok);background:#ecfdf5;box-shadow:0 2px 8px rgba(5,150,105,.1)}
+    .fileItem.done.selected{border-color:var(--ok);background:#dcfce7;box-shadow:0 0 0 3px rgba(5,150,105,.12)}
+    .doneBadge{display:none;font-family:var(--fM);font-size:9px;font-weight:500;
+      padding:2px 8px;border-radius:100px;background:#d1fae5;color:var(--ok);
+      letter-spacing:.04em;flex-shrink:0;white-space:nowrap}
+    .fileItem.done .doneBadge{display:inline-flex;align-items:center;gap:4px}
+    .fileItem.done .btnIconSm.analyzeBtn{opacity:.35;cursor:not-allowed;pointer-events:none}
+    .fileIcon{font-size:20px;flex-shrink:0;line-height:1}
+    .fileMeta{flex:1;min-width:0}
+    .fileName{font-size:12px;font-weight:500;color:var(--txt);
+      word-break:break-word;line-height:1.3;margin-bottom:2px}
+    .fileDate{font-family:var(--fM);font-size:10px;color:var(--muted)}
+    .fileActions{display:flex;gap:5px;flex-shrink:0}
+    .btnIconSm{width:28px;height:28px;border:1.5px solid var(--border);border-radius:6px;
+      background:var(--surf);color:var(--txt2);font-size:13px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+    .btnIconSm:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .btnIconSm.analyzing{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border-color:var(--acc)}
+    .analyzingBadge{position:absolute;top:4px;right:4px;background:var(--acc);color:#fff;
+      font-family:var(--fM);font-size:9px;padding:2px 7px;border-radius:100px;display:none}
+    .fileItem.analyzing .analyzingBadge{display:block}
+
+    /* ── PREVIEW CARD ── */
+    .previewCard{overflow:hidden;padding:0 !important}
+
+    .previewTopBar{display:flex;align-items:center;justify-content:space-between;
+      padding:9px 14px;border-bottom:1.5px solid var(--border);background:var(--surf2)}
+    .previewTopBarL{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+    .previewTopBarL span.fname{font-family:var(--fM);font-size:11px;color:var(--muted);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+    .pTypeBadge{font-family:var(--fM);font-size:9px;font-weight:500;
+      padding:2px 8px;border-radius:100px;background:#dbeafe;color:var(--acc);
+      letter-spacing:.04em;flex-shrink:0}
+
+    /* zoom controls */
+    .zoomBar{display:flex;align-items:center;gap:4px;flex-shrink:0}
+    .zBtn{width:26px;height:26px;border:1.5px solid var(--border);border-radius:6px;
+      background:var(--surf);color:var(--txt2);font-size:14px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;transition:all .2s;
+      font-weight:600;line-height:1}
+    .zBtn:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .zLabel{font-family:var(--fM);font-size:10px;color:var(--muted);min-width:34px;text-align:center}
+    .btnClose{background:none;border:none;color:var(--muted);cursor:pointer;
+      font-size:15px;padding:2px 5px;border-radius:4px;transition:color .2s;line-height:1;flex-shrink:0}
+    .btnClose:hover{color:var(--err)}
+
+    /* preview body */
+    .previewBody{height:440px;overflow:auto;background:#f0f0f0;
+      display:flex;align-items:flex-start;justify-content:center;
+      position:relative}
+
+    /* PDF via proxy */
+    .previewBody iframe{width:100%;height:100%;border:none;display:block;flex-shrink:0}
+
+    /* image zoom wrapper */
+    .imgZoomWrap{overflow:auto;width:100%;height:100%;display:flex;
+      align-items:flex-start;justify-content:center;cursor:grab;user-select:none}
+    .imgZoomWrap:active{cursor:grabbing}
+    .imgZoomWrap img{display:block;transform-origin:top center;
+      transition:transform .2s;max-width:none}
+
+    .previewEmpty{display:flex;flex-direction:column;align-items:center;
+      justify-content:center;width:100%;height:100%;color:var(--muted);
+      font-family:var(--fM);font-size:12px;gap:10px;text-align:center;padding:20px}
+    .previewEmpty .pIcon{font-size:36px}
+
+    /* pdf fallback options */
+    .pdfFallback{display:flex;flex-direction:column;align-items:center;
+      justify-content:center;width:100%;height:100%;gap:12px;padding:24px}
+    .pdfFallback p{font-family:var(--fM);font-size:12px;color:var(--txt2);text-align:center}
+    .pdfFallback .fIco{font-size:40px}
+    .fallbackBtns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+    .btnFallback{padding:8px 16px;border:1.5px solid var(--border);border-radius:8px;
+      background:var(--surf);color:var(--txt2);font-family:var(--fM);font-size:11px;
+      cursor:pointer;transition:all .2s;text-decoration:none;display:flex;align-items:center;gap:6px}
+    .btnFallback:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .btnFallback.primary{background:var(--acc);color:#fff;border-color:var(--acc);
+      box-shadow:0 3px 10px rgba(26,111,219,.25)}
+    .btnFallback.primary:hover{background:#1560c0}
+
+    /* ── RESULTS ── */
+    .resultsArea{display:none}
+    .resultsArea.open{display:block;animation:fadeUp .4s ease}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+    .summaryBar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+    .chip{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:100px;
+      font-size:11px;font-family:var(--fM);border:1.5px solid}
+    .chip.total {background:#f8fafc;border-color:var(--border);color:var(--txt2)}
+    .chip.normal{background:#ecfdf5;border-color:#6ee7b7;color:var(--ok)}
+    .chip.alto  {background:#fef2f2;border-color:#fca5a5;color:var(--err)}
+    .chip.bajo  {background:#fffbeb;border-color:#fcd34d;color:var(--warn)}
+    .chip .dot  {width:6px;height:6px;border-radius:50%;background:currentColor}
+
+    .tabs{display:flex;gap:3px;background:var(--surf);border:1.5px solid var(--border);
+      border-radius:11px 11px 0 0;padding:4px;border-bottom:none;
+      overflow-x:auto;scrollbar-width:none}
+    .tabs::-webkit-scrollbar{display:none}
+    .tBtn{flex:0 0 auto;padding:7px 16px;border:none;border-radius:7px;font-family:var(--fD);
+      font-size:11px;font-weight:600;cursor:pointer;background:transparent;color:var(--muted);
+      transition:all .2s;white-space:nowrap}
+    .tBtn.on{background:var(--bg);color:var(--acc);box-shadow:0 0 0 1.5px var(--border)}
+    .tBtn:hover:not(.on){color:var(--txt);background:var(--surf2)}
+    .tabP{display:none;background:var(--surf);border:1.5px solid var(--border);
+      border-radius:0 0 var(--r) var(--r);box-shadow:0 4px 16px rgba(13,25,41,.06);overflow:hidden}
+    .tabP.on{display:block;animation:fadeIn .2s ease}
+
+    .chartWrap{padding:20px}
+    .examTitle{font-family:var(--fD);font-size:16px;font-weight:700;margin-bottom:3px}
+    .examDate {font-family:var(--fM);font-size:10px;color:var(--muted);margin-bottom:14px}
+    .chartBox {position:relative;height:300px;margin-bottom:20px}
+
+    .paramsGrid{display:grid;gap:6px}
+    .pRow{display:grid;grid-template-columns:180px 1fr 110px 82px;
+      gap:9px;align-items:center;padding:9px 13px;background:var(--bg);
+      border-radius:7px;border:1.5px solid var(--border);transition:border-color .2s}
+    .pRow:hover{border-color:rgba(26,111,219,.2)}
+    .pName{font-size:11px;font-weight:500;color:var(--txt2)}
+    .pBarW{height:5px;background:var(--border);border-radius:3px;overflow:hidden}
+    .pBar{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.25,.46,.45,.94)}
+    .pBar.normal  {background:var(--ok)}
+    .pBar.alto    {background:var(--err)}
+    .pBar.bajo    {background:var(--warn)}
+    .pBar.sin_dato{background:var(--muted)}
+    .pVal{font-family:var(--fM);font-size:11px;text-align:right}
+    .bdg{text-align:center;font-size:9px;font-family:var(--fM);font-weight:500;
+      padding:2px 8px;border-radius:100px;text-transform:uppercase;letter-spacing:.04em}
+    .bdg.normal  {background:#d1fae5;color:var(--ok)}
+    .bdg.alto    {background:#fee2e2;color:var(--err)}
+    .bdg.bajo    {background:#fef3c7;color:var(--warn)}
+    .bdg.sin_dato{background:#f1f5f9;color:var(--muted)}
+
+    /* ── NOTAS CLÍNICAS ── */
+    .notasSection{margin-top:22px;border-top:1.5px solid var(--border);padding-top:18px}
+    .notasSTitle{font-family:var(--fM);font-size:10px;color:var(--muted);
+      letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px;
+      display:flex;align-items:center;gap:6px}
+    .notasGrid{display:flex;flex-direction:column;gap:8px}
+
+    .notaCard{display:flex;gap:12px;padding:12px 14px;border-radius:10px;
+      border:1.5px solid;animation:fadeUp .3s ease}
+    .notaCard.critico  {background:#fff1f2;border-color:#fecdd3}
+    .notaCard.advertencia{background:#fffbeb;border-color:#fde68a}
+    .notaCard.info     {background:#eff6ff;border-color:#bfdbfe}
+    .notaCard.positivo {background:#f0fdf4;border-color:#bbf7d0}
+
+    .notaIcon{font-size:20px;flex-shrink:0;line-height:1;margin-top:1px}
+    .notaBody{flex:1;min-width:0}
+    .notaTitulo{font-size:12px;font-weight:600;margin-bottom:3px;font-family:var(--fD)}
+    .notaCard.critico   .notaTitulo{color:#be123c}
+    .notaCard.advertencia .notaTitulo{color:#92400e}
+    .notaCard.info      .notaTitulo{color:#1e40af}
+    .notaCard.positivo  .notaTitulo{color:#14532d}
+    .notaDesc{font-size:12px;line-height:1.55;color:var(--txt2)}
+
+    /* ── COPY SECTION ── */
+    .copySection{margin-top:20px;border-top:1.5px solid var(--border);padding-top:16px}
+    .copySTitle{font-family:var(--fM);font-size:10px;color:var(--muted);
+      letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px}
+    .copyOpts{display:flex;gap:7px;flex-wrap:wrap}
+    .cOpt{display:flex;align-items:center;gap:6px;padding:7px 13px;
+      border:1.5px solid var(--border);border-radius:8px;background:var(--surf2);
+      font-family:var(--fM);font-size:11px;color:var(--txt2);cursor:pointer;transition:all .2s}
+    .cOpt:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .cOpt.done {border-color:var(--ok);color:var(--ok);background:#ecfdf5}
+    .cOpt .oIco{font-size:13px}
+
+    /* ── JSON TAB ── */
+    .jsonTB{display:flex;justify-content:space-between;align-items:center;
+      padding:9px 14px;border-bottom:1.5px solid var(--border);background:var(--surf2)}
+    .jsonTB span{font-family:var(--fM);font-size:10px;color:var(--muted)}
+    .btnCp{padding:4px 10px;border:1.5px solid var(--border);border-radius:6px;
+      background:var(--surf);color:var(--txt2);font-family:var(--fM);font-size:10px;
+      cursor:pointer;transition:all .2s}
+    .btnCp:hover{border-color:var(--acc);color:var(--acc)}
+    .btnCp.cp{border-color:var(--ok);color:var(--ok)}
+    pre#jsonOut{background:#f8fafc;color:#1e293b;font-family:var(--fM);
+      font-size:11.5px;line-height:1.75;padding:16px;overflow-x:auto}
+    .jk{color:#1a6fdb}.js{color:#059669}.jn{color:#d97706}.jb{color:#7c3aed}.jz{color:#94a3b8}
+
+    /* ── ERROR ── */
+    .errBox{display:none;background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;
+      padding:14px 16px;color:var(--err);font-family:var(--fM);font-size:12px;margin-bottom:14px}
+    .errBox.open{display:block;animation:fadeUp .3s ease}
+    .errBox strong{display:block;margin-bottom:3px;font-size:13px}
+
+    /* ── MODAL CONTRASEÑA ── */
+    .modalOverlay{position:fixed;inset:0;background:rgba(13,25,41,.45);backdrop-filter:blur(3px);
+      z-index:500;display:flex;align-items:center;justify-content:center;
+      opacity:0;pointer-events:none;transition:opacity .2s}
+    .modalOverlay.open{opacity:1;pointer-events:all}
+    .modalBox{background:var(--surf);border:1.5px solid var(--border);border-radius:16px;
+      padding:28px 26px;width:340px;max-width:92vw;
+      box-shadow:0 20px 60px rgba(13,25,41,.18);
+      transform:translateY(12px);transition:transform .2s}
+    .modalOverlay.open .modalBox{transform:translateY(0)}
+    .modalIcon{font-size:32px;margin-bottom:10px;text-align:center}
+    .modalTitle{font-family:var(--fD);font-weight:700;font-size:16px;
+      margin-bottom:4px;text-align:center}
+    .modalSub{font-family:var(--fM);font-size:11px;color:var(--muted);
+      text-align:center;margin-bottom:18px;line-height:1.5}
+    .modalFileName{font-weight:600;color:var(--txt);display:block;margin-top:2px}
+    .pwdRow{position:relative;margin-bottom:14px}
+    .pwdRow input{padding-right:40px;letter-spacing:.08em}
+    .btnTogglePwd{position:absolute;right:10px;top:50%;transform:translateY(-50%);
+      background:none;border:none;cursor:pointer;font-size:15px;color:var(--muted);
+      padding:2px;transition:color .2s;line-height:1}
+    .btnTogglePwd:hover{color:var(--acc)}
+    .modalErr{font-family:var(--fM);font-size:11px;color:var(--err);
+      margin-bottom:12px;display:none;padding:8px 12px;
+      background:#fef2f2;border-radius:7px;border:1px solid #fecaca}
+    .modalErr.show{display:block}
+    .modalBtns{display:flex;gap:8px}
+    .btnModalCancel{flex:1;padding:10px;border:1.5px solid var(--border);border-radius:9px;
+      background:var(--surf2);color:var(--txt2);font-family:var(--fM);font-size:12px;
+      cursor:pointer;transition:all .2s}
+    .btnModalCancel:hover{border-color:var(--muted)}
+    .btnModalOk{flex:2;padding:10px;border:none;border-radius:9px;
+      background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;
+      font-family:var(--fM);font-size:12px;font-weight:600;cursor:pointer;
+      box-shadow:0 3px 12px rgba(26,111,219,.28);transition:all .2s;
+      display:flex;align-items:center;justify-content:center;gap:6px}
+    .btnModalOk:hover{transform:translateY(-1px)}
+    .btnModalOk:disabled{opacity:.45;cursor:not-allowed;transform:none}
+
+    /* ── TOAST ── */
+    .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(8px);
+      background:var(--txt);color:#fff;font-family:var(--fM);font-size:12px;
+      padding:8px 18px;border-radius:100px;opacity:0;pointer-events:none;
+      transition:opacity .25s,transform .25s;z-index:999}
+    .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+    /* ── TARJETA PROFESIONAL ── */
+    .profCard{display:flex;align-items:center;gap:12px;padding:11px 14px;
+      background:linear-gradient(90deg,#f0f9ff,#f5f3ff);
+      border:1.5px solid #bae6fd;border-radius:10px;margin-bottom:10px}
+    .profCard.missing{background:#fafafa;border-color:var(--border);border-style:dashed}
+    .profAvatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--acc),var(--acc2));
+      display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;
+      box-shadow:0 2px 8px rgba(26,111,219,.2)}
+    .profCard.missing .profAvatar{background:#e2e8f0}
+    .profInfo{flex:1;min-width:0}
+    .profNombre{font-family:var(--fD);font-size:13px;font-weight:700;color:var(--txt);
+      line-height:1.2;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .profCargo{font-family:var(--fM);font-size:10px;color:var(--acc);letter-spacing:.03em}
+    .profCard.missing .profCargo{color:var(--muted)}
+    .profRegistro{font-family:var(--fM);font-size:9px;color:var(--muted);margin-top:1px}
+    .profInstRow{display:flex;align-items:center;gap:5px;margin-top:3px;
+      font-family:var(--fM);font-size:10px;color:var(--txt2)}
+    .profInstRow .instIco{font-size:11px}
+
+    /* ── MULTI-EXAM NAVIGATOR ── */
+    .multiExamBanner{display:flex;align-items:center;gap:10px;padding:9px 14px;
+      background:linear-gradient(90deg,#eff6ff,#f5f3ff);
+      border:1.5px solid #c7d2fe;border-radius:10px;margin-bottom:12px;
+      font-family:var(--fM);font-size:11px;color:#3730a3}
+    .multiExamBanner .mIcon{font-size:18px}
+    .multiExamBanner strong{font-size:12px}
+
+    .examNavBar{display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:14px;
+      overflow-x:auto;padding-bottom:6px;align-items:center;
+      scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+    .examNavBar::-webkit-scrollbar{height:4px}
+    .examNavBar::-webkit-scrollbar-track{background:transparent}
+    .examNavBar::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+    .examNavBtn{display:flex;align-items:center;gap:5px;padding:6px 12px;
+      border:1.5px solid var(--border);border-radius:100px;
+      background:var(--surf);color:var(--txt2);font-family:var(--fM);
+      font-size:11px;cursor:pointer;transition:all .2s;
+      white-space:nowrap;flex-shrink:0}
+    .examNavBtn:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .examNavBtn.active{background:linear-gradient(135deg,var(--acc),var(--acc2));
+      color:#fff;border-color:transparent;
+      box-shadow:0 3px 10px rgba(26,111,219,.28)}
+    .examNavBtn .eIdx{font-size:9px;opacity:.75}
+    .examNavArrows{display:flex;gap:4px;margin-left:auto}
+    .examNavArrow{width:30px;height:30px;border:1.5px solid var(--border);border-radius:8px;
+      background:var(--surf);color:var(--txt2);font-size:14px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;transition:all .2s}
+    .examNavArrow:hover{border-color:var(--acc);color:var(--acc);background:#eef5ff}
+    .examNavArrow:disabled{opacity:.3;cursor:not-allowed}
+    .examCounter{font-family:var(--fM);font-size:10px;color:var(--muted);
+      display:flex;align-items:center;padding:0 6px}
+
+    @media(max-width:640px){
+      .pRow{grid-template-columns:1fr 1fr}
+      .pBarW{grid-column:1/-1}
+    }
+
+    /* ── FILTER CHIPS (clickable) ── */
+    .chip.clickable{cursor:pointer;transition:all .2s}
+    .chip.clickable:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .chip.active-filter{box-shadow:0 0 0 2.5px currentColor;font-weight:700}
+    .chip.faded{opacity:.4}
+
+    /* ── PREVIEW COLLAPSIBLE ── */
+    .previewTopBar{cursor:pointer;user-select:none}
+    .previewTopBar:hover{background:#eef5ff}
+    .collapseIcon{font-size:11px;color:var(--muted);transition:transform .25s;flex-shrink:0;margin-left:4px}
+    .previewCard.collapsed .collapseIcon{transform:rotate(-90deg)}
+    .previewCard.collapsed .previewBody{display:none}
+    .previewCard.collapsed .zoomBar{display:none!important}
+
+    /* ── EXAM META chips ── */
+    .examMeta{margin-bottom:14px}
+    .examMetaRow{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+    .metaChip{font-family:var(--fM);font-size:10px;color:var(--txt2);
+      background:var(--surf2);border:1px solid var(--border);
+      border-radius:6px;padding:3px 9px;display:flex;align-items:center;gap:5px}
+
+    /* ── CACHED BADGE ── */
+    .cachedBadge{display:inline-flex;align-items:center;gap:5px;font-family:var(--fM);
+      font-size:9px;font-weight:500;padding:2px 10px;border-radius:100px;
+      background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;letter-spacing:.04em;
+      margin-left:8px;vertical-align:middle}
+    /* ── FHIR DISCIPLINE CHIP ── */
+    .fhirChip{font-family:var(--fM);font-size:9px;font-weight:600;
+      padding:2px 9px;border-radius:6px;letter-spacing:.04em;
+      background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe}
+    .fhirChip.RAD{background:#fce7f3;color:#9d174d;border-color:#fbcfe8}
+    .fhirChip.PAT{background:#fef3c7;color:#92400e;border-color:#fde68a}
+    .fhirChip.CARD{background:#fee2e2;color:#991b1b;border-color:#fecaca}
+    .fhirChip.OT{background:#f0fdf4;color:#14532d;border-color:#bbf7d0}
+
+    /* ── CUPS CHIP ── */
+    .cupsChip{font-family:var(--fM);font-size:9px;font-weight:600;
+      padding:2px 9px;border-radius:6px;letter-spacing:.04em;
+      background:#f0fdf4;color:#166534;border:1px solid #86efac;
+      display:inline-flex;align-items:center;gap:4px}
+    .cupsChip.sin_match{background:#f8fafc;color:var(--muted);border-color:var(--border)}
+    .cupsChip.llm{background:#ede9fe;color:#5b21b6;border-color:#c4b5fd}
+
+    /* ── PARAMS GRID redesign ── */
+    .paramsGrid{display:grid;gap:6px}
+    .pRow{display:grid;grid-template-columns:1fr;
+      gap:4px;padding:10px 14px;background:var(--bg);
+      border-radius:7px;border:1.5px solid var(--border);transition:border-color .2s}
+    .pRow:hover{border-color:rgba(26,111,219,.2)}
+    .pRow.hidden{display:none}
+    .pMain{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .pName{font-size:11px;font-weight:500;color:var(--txt2);flex:1;min-width:120px}
+    .pVal{font-family:var(--fM);font-size:11px;color:var(--txt);white-space:nowrap}
+    .pNotaInline{font-size:10px;color:var(--txt2);font-style:italic;
+      padding-left:2px;line-height:1.4;display:none;margin-top:2px}
+    .pRow.has-nota .pNotaInline{display:block}
+    .pMetodo{font-family:var(--fM);font-size:9px;color:var(--muted);padding-left:2px;margin-top:1px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <header>
+    <div class="hL">
+      <div class="logo"><img src="https://www.tekerapp.co/assets/logo.svg" alt="Teker Logo"></div>
+      <div class="logoTxt">
+        <h1>LabAnalyzer</h1>
+        <small data-i18n="subtitle">Sistema de Extracción Clínica v2.0</small>
+      </div>
+    </div>
+    <div class="langT">
+      <button class="lBtn on" onclick="setLang('es')">ES</button>
+      <button class="lBtn"    onclick="setLang('en')">EN</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- ═══ PANEL IZQUIERDO ═══ -->
+    <div class="leftPanel">
+      <div class="leftPanelWrap" id="leftPanelWrap">
+        <button class="leftCollapseBtn" onclick="toggleLeftPanel()" title="Colapsar panel">
+          <span class="leftCollapseIcon" id="leftCollapseIcon">◀</span>
+        </button>
+
+      <div class="card">
+        <div class="cardTitle" data-i18n="cardSearch">Buscar paciente</div>
+        <div class="searchRow">
+          <div class="fGroup">
+            <label data-i18n="lIdent">Identificación</label>
+            <input type="text" id="inputIdent" data-ph="phIdent"
+              placeholder="Ej. 12345678"
+              onkeydown="if(event.key==='Enter')buscarArchivos()">
+          </div>
+          <button class="btnSearch" id="btnSearch" onclick="buscarArchivos()">
+            <span class="sIco">🔍</span>
+            <div class="spn"></div>
+            <span id="searchLabel" data-i18n="btnSearch">Buscar</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:14px 16px">
+        <div class="cardTitle" data-i18n="cardFiles">Documentos disponibles</div>
+        <div class="fileList" id="fileList">
+          <div class="emptyState">
+            <div class="bigEm">🗂️</div>
+            <p data-i18n="emptySearch">Ingresa una identificación<br>para ver los documentos.</p>
+          </div>
+        </div>
+      </div>
+
+      </div><!-- /leftPanelWrap -->
+    </div>
+
+    <!-- ═══ PANEL DERECHO ═══ -->
+    <div class="rightPanel">
+
+      <!-- Preview -->
+      <div class="card previewCard" id="previewCard">
+
+        <!-- Barra superior colapsable -->
+        <div class="previewTopBar" onclick="togglePreviewCollapse(event)">
+          <div class="previewTopBarL">
+            <span class="fname" id="previewFileName" data-i18n="previewHintShort">Sin archivo seleccionado</span>
+            <span class="pTypeBadge" id="previewType" style="display:none">—</span>
+          </div>
+          <!-- Controles zoom -->
+          <div class="zoomBar" id="zoomBar" style="display:none" onclick="event.stopPropagation()">
+            <button class="zBtn" onclick="zoom(-1)" title="Reducir">−</button>
+            <span class="zLabel" id="zoomLabel">100%</span>
+            <button class="zBtn" onclick="zoom(+1)" title="Ampliar">+</button>
+            <button class="zBtn" onclick="zoom(0)" title="Restablecer" style="font-size:11px">↺</button>
+          </div>
+          <span class="collapseIcon" id="collapseIcon">▾</span>
+          <button class="btnClose" id="btnClosePreview" onclick="event.stopPropagation();clearPreview()" style="display:none">✕</button>
+        </div>
+
+        <div class="previewBody" id="previewBody">
+          <div class="previewEmpty">
+            <div class="pIcon">👁️</div>
+            <span data-i18n="previewHint">Selecciona un documento<br>para ver la vista previa</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div class="errBox" id="errBox">
+        <strong data-i18n="errTitle">❌ Error en el análisis</strong>
+        <span id="errMsg"></span>
+      </div>
+
+      <!-- Resultados -->
+      <div class="resultsArea" id="resultsArea">
+
+        <!-- Banner multi-examen (se muestra solo cuando hay >1) -->
+        <div class="multiExamBanner" id="multiExamBanner" style="display:none">
+          <span class="mIcon">📋</span>
+          <div>
+            <strong id="multiExamTitle">—</strong><br>
+            <span id="multiExamSub">—</span>
+          </div>
+        </div>
+
+        <!-- Navegador de exámenes -->
+        <div id="examNavWrap" style="display:none">
+          <div class="examNavBar" id="examNavBar"></div>
+        </div>
+
+        <div class="summaryBar" id="summaryBar"></div>
+        <div class="tabs">
+          <button class="tBtn on" onclick="tab('chart',this)" data-i18n="tabChart">📊 Vista Gráfica</button>
+          <button class="tBtn"    onclick="tab('json',this)">{ } JSON Raw</button>
+        </div>
+
+        <div class="tabP on" id="panel-chart">
+          <div class="chartWrap">
+
+            <!-- Tarjeta profesional -->
+            <div id="profCard" class="profCard" style="display:none">
+              <div class="profAvatar" id="profAvatar">👨‍⚕️</div>
+              <div class="profInfo">
+                <div class="profNombre" id="profNombre">—</div>
+                <div class="profCargo"  id="profCargo"></div>
+                <div class="profRegistro" id="profRegistro"></div>
+                <div class="profInstRow" id="profInstRow" style="display:none">
+                  <span class="instIco">🏥</span>
+                  <span id="profInst">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="examMeta">
+              <div class="examTitle" id="examTitle">—</div>
+              <div class="examDate"  id="examDate">—</div>
+              <div class="examMetaRow" id="examMetaRow"></div>
+            </div>
+            <div class="chartBox" id="chartBox"><canvas id="myChart"></canvas></div>
+            <div class="paramsGrid" id="paramsGrid"></div>
+
+            <!-- Notas clínicas -->
+            <div class="notasSection" id="notasSection" style="display:none">
+              <div class="notasSTitle">
+                <span>🩺</span>
+                <span data-i18n="aiSummaryTitle">Resumen de la IA</span>
+              </div>
+              <div class="notasGrid" id="notasGrid"></div>
+            </div>
+
+            <!-- Copiar -->
+            <div class="copySection">
+              <div class="copySTitle" data-i18n="copyTitle">Copiar resultados como</div>
+              <div class="copyOpts">
+                <button class="cOpt" id="cPlain"    onclick="copyAs('plain')"><span class="oIco">📋</span><span data-i18n="cPlain">Resumen texto</span></button>
+                <button class="cOpt" id="cTable"    onclick="copyAs('table')"><span class="oIco">📊</span><span data-i18n="cTable">Tabla (TSV)</span></button>
+                <button class="cOpt" id="cMarkdown" onclick="copyAs('markdown')"><span class="oIco">📝</span><span data-i18n="cMarkdown">Markdown</span></button>
+                <button class="cOpt" id="cJSON"     onclick="copyAs('json')"><span class="oIco">{ }</span><span data-i18n="cJSON">JSON completo</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabP" id="panel-json">
+          <div class="jsonTB">
+            <span>application/json</span>
+            <button class="btnCp" id="btnCpJSON" onclick="copyRawJSON()" data-i18n="copyBtn">⧉ Copiar</button>
+          </div>
+          <pre id="jsonOut"></pre>
+        </div>
+
+          <pre id="fhirOut" style="background:#f8fafc;color:#1e293b;font-family:var(--fM);font-size:11px;line-height:1.7;padding:16px;overflow-x:auto"></pre>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- MODAL CONTRASEÑA PDF -->
+<div class="modalOverlay" id="pwdModal" onclick="onModalOverlayClick(event)">
+  <div class="modalBox">
+    <div class="modalIcon">🔒</div>
+    <div class="modalTitle" data-i18n="pwdTitle">PDF protegido</div>
+    <div class="modalSub">
+      <span data-i18n="pwdSub">Este archivo requiere contraseña:</span>
+      <span class="modalFileName" id="pwdFileName">—</span>
+    </div>
+    <div class="pwdRow">
+      <label data-i18n="pwdLabel">Contraseña</label>
+      <input type="password" id="pwdInput" placeholder="Ingresa la contraseña"
+        onkeydown="if(event.key==='Enter')confirmPassword()">
+      <button class="btnTogglePwd" onclick="togglePwdVisibility()" id="btnEye">👁</button>
+    </div>
+    <div class="modalErr" id="pwdErr"></div>
+    <div class="modalBtns">
+      <button class="btnModalCancel" onclick="closePasswordModal()" data-i18n="pwdCancel">Cancelar</button>
+      <button class="btnModalOk" id="btnPwdOk" onclick="confirmPassword()">
+        <span id="pwdOkIcon">🔓</span>
+        <div class="spn" id="pwdSpinner" style="display:none"></div>
+        <span data-i18n="pwdOk">Desbloquear y analizar</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════
+   i18n
+═══════════════════════════════ */
+const TR={
+  es:{
+    subtitle:'Sistema de Extracción Clínica v2.0',
+    cardSearch:'Buscar paciente',lIdent:'Identificación',phIdent:'Ej. 12345678',
+    btnSearch:'Buscar',btnSearching:'Buscando…',
+    cardFiles:'Documentos disponibles',
+    emptySearch:'Ingresa una identificación\npara ver los documentos.',
+    emptyNoFiles:'No se encontraron documentos\npara esta identificación.',
+    previewHintShort:'Sin archivo seleccionado',
+    previewHint:'Selecciona un documento\npara ver la vista previa',
+    errTitle:'❌ Error en el análisis',
+    analyzing:'Analizando…',
+    tabChart:'📊 Vista Gráfica',
+    notasTitle:'Notas clínicas',
+    aiSummaryTitle:'Resumen de la IA',
+    copyTitle:'Copiar resultados como',
+    cPlain:'Resumen texto',cTable:'Tabla (TSV)',cMarkdown:'Markdown',cJSON:'JSON completo',
+    copyBtn:'⧉ Copiar',copied:'✓ Copiado',
+    alertEmpty:'Ingresa una identificación.',
+    cParams:n=>`${n} parámetros`,cNormal:n=>`${n} normales`,
+    cHigh:n=>`${n} altos`,cLow:n=>`${n} bajos`,
+    states:{normal:'normal',alto:'alto',bajo:'bajo',sin_dato:'sin dato'},
+    filterAll:'Todos',
+    lblProfesional:'Profesional',lblInstitucion:'Institución',
+    lblMetodo:'Método',lblNotas:'Notas del parámetro',
+    dateL:'Fecha',userL:'Usuario ID',tipV:'Valor',tipR:'Ref',tipS:'Estado',
+    alreadyAnalyzed:'Ya analizado',
+    savedOk:'✓ Análisis guardado en la base de datos',
+    saving:'Guardando…',
+    loadingPreview:'Cargando vista previa…',
+    noPreview:'No se puede previsualizar este archivo directamente.',
+    pdfBlocked:'El servidor no permite incrustar este PDF directamente.',
+    openGdocs:'Abrir en Google Docs',openDirect:'Abrir URL directa',download:'Descargar',
+    pwdTitle:'PDF protegido',
+    pwdSub:'Este archivo requiere contraseña:',
+    pwdLabel:'Contraseña',
+    pwdPlaceholder:'Ingresa la contraseña del PDF',
+    pwdCancel:'Cancelar',
+    pwdOk:'Desbloquear y analizar',
+    pwdWrong:'Contraseña incorrecta. Intenta de nuevo.',
+  },
+  en:{
+    subtitle:'Clinical Extraction System v2.0',
+    cardSearch:'Search patient',lIdent:'Identification',phIdent:'e.g. 12345678',
+    btnSearch:'Search',btnSearching:'Searching…',
+    cardFiles:'Available documents',
+    emptySearch:'Enter an identification\nto view documents.',
+    emptyNoFiles:'No documents found\nfor this identification.',
+    previewHintShort:'No file selected',
+    previewHint:'Select a document\nto see the preview',
+    errTitle:'❌ Analysis Error',
+    analyzing:'Analyzing…',
+    tabChart:'📊 Chart View',
+    notasTitle:'Clinical notes',
+    aiSummaryTitle:'AI Summary',
+    copyTitle:'Copy results as',
+    cPlain:'Text summary',cTable:'Table (TSV)',cMarkdown:'Markdown',cJSON:'Full JSON',
+    copyBtn:'⧉ Copy',copied:'✓ Copied',
+    alertEmpty:'Please enter an identification.',
+    cParams:n=>`${n} parameters`,cNormal:n=>`${n} normal`,
+    cHigh:n=>`${n} high`,cLow:n=>`${n} low`,
+    states:{normal:'normal',alto:'high',bajo:'low',sin_dato:'no data'},
+    filterAll:'All',
+    lblProfesional:'Professional',lblInstitucion:'Institution',
+    lblMetodo:'Method',lblNotas:'Parameter notes',
+    dateL:'Date',userL:'User ID',tipV:'Value',tipR:'Ref',tipS:'Status',
+    alreadyAnalyzed:'Already analyzed',
+    savedOk:'✓ Analysis saved to database',
+    saving:'Saving…',
+    loadingPreview:'Loading preview…',
+    noPreview:'Cannot preview this file directly.',
+    pdfBlocked:'The server does not allow embedding this PDF.',
+    openGdocs:'Open in Google Docs',openDirect:'Open direct URL',download:'Download',
+    pwdTitle:'Protected PDF',
+    pwdSub:'This file requires a password:',
+    pwdLabel:'Password',
+    pwdPlaceholder:'Enter the PDF password',
+    pwdCancel:'Cancel',
+    pwdOk:'Unlock and analyze',
+    pwdWrong:'Wrong password. Please try again.',
+  }
+};
+
+let lang='es', lastData=null, chartInst=null, currentFiles=[], selectedIdx=null, activeFilter='all';
+let zoomLevel=1, currentFileUrl='', currentFileType='';
+let allExamenes=[], examIdx=0;
+
+const t=k=>TR[lang][k]||k;
+const stateL=s=>(TR[lang].states[s]||s);
+
+function setLang(l){
+  lang=l;
+  document.querySelectorAll('.lBtn').forEach((b,i)=>b.classList.toggle('on',(i===0&&l==='es')||(i===1&&l==='en')));
+  document.querySelectorAll('[data-i18n]').forEach(el=>{const v=TR[l][el.dataset.i18n];if(typeof v==='string')el.textContent=v;});
+  document.querySelectorAll('[data-ph]').forEach(el=>{const v=TR[l][el.dataset.ph];if(v)el.placeholder=v;});
+  if(lastData) renderMultiResults(lastData);
+  if(currentFiles.length) renderFileList(currentFiles);
+}
+
+/* ── TABS ── */
+function tab(name,btn){
+  document.querySelectorAll('.tBtn').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('.tabP').forEach(p=>p.classList.remove('on'));
+  btn.classList.add('on');
+  document.getElementById('panel-'+name).classList.add('on');
+}
+
+/* ── TOAST ── */
+function showToast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),2200);
+}
+
+/* ── FILE UTILS ── */
+function getFileType(url){
+  const u=(url||'').toLowerCase().split('?')[0];
+  if(u.endsWith('.pdf')) return 'pdf';
+  if(u.match(/\.(png|jpg|jpeg|gif|webp|bmp|svg)$/)) return 'image';
+  return 'other';
+}
+function getFileIcon(name){
+  const n=(name||'').toLowerCase();
+  if(n.includes('.pdf')) return '📄';
+  if(n.match(/\.(png|jpg|jpeg|gif|webp)$/)) return '🖼️';
+  return '📋';
+}
+function esc(s){return(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function decodeAltName(s){
+  if(!s) return s;
+  const parts=(s||'').split('_');
+  const last=parts[parts.length-1];
+  if(/^\d{8}$/.test(last)){
+    const d=last.replace(/(\d{4})(\d{2})(\d{2})/,'$1/$2/$3');
+    return parts.slice(0,-1).join(' ')+' · '+d;
+  }
+  return parts.join(' ');
+}
+
+/* ═══════════════════════════════
+   LEFT PANEL COLLAPSE
+═══════════════════════════════ */
+let leftCollapsed=false;
+function toggleLeftPanel(){
+  leftCollapsed=!leftCollapsed;
+  document.querySelector('.layout').classList.toggle('left-collapsed',leftCollapsed);
+  document.getElementById('leftCollapseIcon').textContent=leftCollapsed?'▶':'◀';
+  // When collapsed, also update title attribute
+  const btn=document.querySelector('.leftCollapseBtn');
+  btn.title=leftCollapsed?(lang==='es'?'Expandir panel':'Expand panel'):(lang==='es'?'Colapsar panel':'Collapse panel');
+}
+
+/* ═══════════════════════════════
+   FILTER CHIPS
+═══════════════════════════════ */
+function applyFilter(estado){
+  activeFilter=estado;
+  document.querySelectorAll('.chip.clickable').forEach(ch=>{
+    const f=ch.dataset.filter;
+    ch.classList.toggle('active-filter', f===estado);
+    ch.classList.toggle('faded', f!==estado && estado!=='all' && f!=='all');
+  });
+  document.querySelectorAll('.pRow[data-estado]').forEach(row=>{
+    row.classList.toggle('hidden', estado!=='all' && row.dataset.estado!==estado);
+  });
+
+  // Reconstruir chart con el examen activo filtrado
+  const exam = allExamenes[examIdx];
+  if(!exam) return;
+  const res = exam.resultados || [];
+  const filtered = estado==='all'
+    ? res.filter(r=>!isNaN(parseFloat(r.valor)))
+    : res.filter(r=>r.estado===estado && !isNaN(parseFloat(r.valor)));
+  const chartBox=document.getElementById('chartBox');
+  if(filtered.length===0){ chartBox.style.display='none'; if(chartInst){chartInst.destroy();chartInst=null;} return; }
+  chartBox.style.display='block';
+  if(chartInst) chartInst.destroy();
+  chartInst=new Chart(document.getElementById('myChart').getContext('2d'),{
+    type:'bar',
+    data:{labels:filtered.map(r=>r.parametro),datasets:[{
+      data:filtered.map(r=>parseFloat(r.valor)),
+      backgroundColor:filtered.map(r=>(C[r.estado]||C.sin_dato).bg),
+      borderColor:filtered.map(r=>(C[r.estado]||C.sin_dato).b),
+      borderWidth:1.5,borderRadius:5,borderSkipped:false}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{
+        backgroundColor:'#fff',titleColor:'#0d1929',bodyColor:'#3d5068',
+        borderColor:'#dde4ed',borderWidth:1,padding:10,
+        callbacks:{title:it=>it[0].label,label:it=>{
+          const r=filtered[it.dataIndex];
+          return[` ${t('tipV')}: ${r.valor}${r.unidad?' '+r.unidad:''}`,
+                 ` ${t('tipR')}: ${r.referencia||'N/A'}`,
+                 ` ${t('tipS')}: ${stateL(r.estado).toUpperCase()}`];}}}},
+      scales:{
+        x:{ticks:{color:'#8fa3bc',font:{family:"'DM Mono',monospace",size:9},maxRotation:40},grid:{color:'#f0f4f8'}},
+        y:{ticks:{color:'#8fa3bc',font:{family:"'DM Mono',monospace",size:9}},grid:{color:'#f0f4f8'}}
+      }}
+  });
+}
+
+/* ═══════════════════════════════
+   PREVIEW COLLAPSE
+═══════════════════════════════ */
+let previewCollapsed=false;
+function togglePreviewCollapse(e){
+  // Don't collapse if clicking zoom buttons or close
+  if(e.target.closest('.zoomBar')||e.target.closest('.btnClose')) return;
+  previewCollapsed=!previewCollapsed;
+  document.getElementById('previewCard').classList.toggle('collapsed',previewCollapsed);
+}
+
+/* ═══════════════════════════════
+   ZOOM
+═══════════════════════════════ */
+function zoom(dir){
+  const steps=[0.5,0.75,1,1.25,1.5,2,2.5,3];
+  const cur=steps.findIndex(s=>Math.abs(s-zoomLevel)<0.01);
+
+  if(dir===0){ zoomLevel=1; }
+  else if(dir>0){ zoomLevel=steps[Math.min(cur+1,steps.length-1)]; }
+  else          { zoomLevel=steps[Math.max(cur-1,0)]; }
+
+  document.getElementById('zoomLabel').textContent=Math.round(zoomLevel*100)+'%';
+
+  if(currentFileType==='image'){
+    const img=document.querySelector('.imgZoomWrap img');
+    if(img) img.style.transform=`scale(${zoomLevel})`;
+  } else if(currentFileType==='pdf'){
+    // Re-render proxy URL con zoom no aplica a iframe directamente,
+    // pero actualizamos el label visualmente
+    // Para PDF el zoom nativo del visor del browser maneja esto
+  }
+}
+
+/* ═══════════════════════════════
+   BUSCAR ARCHIVOS
+═══════════════════════════════ */
+async function buscarArchivos(){
+  const ident=document.getElementById('inputIdent').value.trim();
+  if(!ident){alert(t('alertEmpty'));return;}
+  const btn=document.getElementById('btnSearch');
+  const lbl=document.getElementById('searchLabel');
+  btn.disabled=true;btn.classList.add('loading');
+  lbl.textContent=t('btnSearching');
+  clearPreview();clearResults();selectedIdx=null;
+  try{
+    const res=await fetch('/archivos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identificacion:ident})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.detail||'Error en consulta');
+    currentFiles=data.archivos||[];
+    renderFileList(currentFiles);
+  }catch(e){currentFiles=[];renderFileList([],e.message);}
+  finally{btn.disabled=false;btn.classList.remove('loading');lbl.textContent=t('btnSearch');}
+}
+
+/* ═══════════════════════════════
+   RENDER FILE LIST
+═══════════════════════════════ */
+function renderFileList(files,errorMsg){
+  const list=document.getElementById('fileList');
+  list.innerHTML='';
+  if(errorMsg){
+    list.innerHTML=`<div class="emptyState"><div class="bigEm">⚠️</div><p style="color:var(--err)">${errorMsg}</p></div>`;
+    return;
+  }
+  if(!files.length){
+    list.innerHTML=`<div class="emptyState"><div class="bigEm">📭</div><p>${t('emptyNoFiles').replace(/\n/g,'<br>')}</p></div>`;
+    return;
+  }
+  files.forEach((f,i)=>{
+    const done = f.ya_analizado === true;
+    const displayName = done && f.nombre_alternativo
+      ? decodeAltName(f.nombre_alternativo)
+      : f.nombre_archivo;
+    const icon = getFileIcon(f.nombre_archivo||'');
+    const el = document.createElement('div');
+    el.className = 'fileItem' + (done ? ' done' : '');
+    el.dataset.idx = i;
+    const eyeAction = done ? `loadStoredAnalysis(${i})` : `previewFile(${i})`;
+    const eyeTitle  = done ? t('alreadyAnalyzed') : 'Vista previa';
+    el.innerHTML=`
+      <span class="fileIcon">${icon}</span>
+      <div class="fileMeta">
+        <div class="fileName" title="${esc(displayName)}">${esc(displayName||'Archivo')}</div>
+        ${!done ? `<div class="fileDate">${f.fecha_cargue||'—'}</div>` : ''}
+      </div>
+      <div class="fileActions">
+        <button class="btnIconSm" title="${eyeTitle}"
+          onclick="event.stopPropagation();${eyeAction}">👁</button>
+        <button class="btnIconSm analyzeBtn${done?' analyzeBtn':''}" id="analyzeBtn-${i}"
+          title="${done ? t('alreadyAnalyzed') : 'Analizar'}"
+          ${done ? 'disabled' : ''}
+          onclick="event.stopPropagation();analyzeFile(${i})">⚡</button>
+      </div>
+      <span class="doneBadge">✓ ${t('alreadyAnalyzed')}</span>
+      <span class="analyzingBadge">${t('analyzing')}</span>`;
+    el.addEventListener('click',()=>{
+      if(done && f.analisis){ loadStoredAnalysis(i); }
+      else { previewFile(i); }
+    });
+    list.appendChild(el);
+  });
+}
+
+/* ═══════════════════════════════
+   PREVIEW — con proxy para PDFs
+═══════════════════════════════ */
+function previewFile(idx){
+  const f=currentFiles[idx];
+  if(!f||!f.url) return;
+  selectedIdx=idx;
+  document.querySelectorAll('.fileItem').forEach((el,i)=>el.classList.toggle('selected',i===idx));
+
+  const displayName = f.ya_analizado && f.nombre_alternativo ? f.nombre_alternativo : (f.nombre_archivo||'—');
+  document.getElementById('previewFileName').textContent=displayName;
+  document.getElementById('previewType').style.display='inline';
+  document.getElementById('btnClosePreview').style.display='block';
+
+  const ftype=getFileType(f.url);
+  currentFileType=ftype;
+  currentFileUrl=f.url;
+  zoomLevel=1;
+  document.getElementById('zoomLabel').textContent='100%';
+
+  const tp=document.getElementById('previewType');
+  tp.textContent=ftype.toUpperCase();
+
+  const body=document.getElementById('previewBody');
+  body.innerHTML=`<div class="previewEmpty"><div class="pIcon">⏳</div><span>${t('loadingPreview')}</span></div>`;
+
+  // Mostrar zoom solo para imágenes (PDF usa zoom nativo del browser)
+  document.getElementById('zoomBar').style.display=(ftype==='image')?'flex':'none';
+
+  if(ftype==='pdf'){
+    loadPDF(f.url, body);
+  } else if(ftype==='image'){
+    loadImage(f.url, body);
+  } else {
+    body.innerHTML=`<div class="previewEmpty"><div class="pIcon">📄</div><span>${t('noPreview')}</span></div>`;
+  }
+}
+
+function loadPDF(url, body){
+  // Intentar primero con el proxy propio (resuelve CORS y X-Frame-Options)
+  const proxyUrl=`/proxy-file?url=${encodeURIComponent(url)}`;
+  const iframe=document.createElement('iframe');
+  iframe.title='PDF Preview';
+  iframe.style.cssText='width:100%;height:100%;border:none;display:block';
+
+  // Detectar si el iframe falla (timeout o error de carga)
+  let loaded=false;
+  const fallbackTimer=setTimeout(()=>{
+    if(!loaded) showPDFFallback(url, body);
+  }, 8000);
+
+  iframe.onload=()=>{
+    loaded=true;
+    clearTimeout(fallbackTimer);
+    // Verificar si el contenido es válido (algunos servers devuelven 200 con HTML de error)
+    try{
+      const doc=iframe.contentDocument||iframe.contentWindow?.document;
+      if(doc && doc.body && doc.body.innerText && doc.body.innerText.length<100 && !doc.body.querySelector('embed')){
+        showPDFFallback(url, body);
+      }
+    }catch(e){ /* cross-origin, probablemente OK */ }
+  };
+  iframe.onerror=()=>{ clearTimeout(fallbackTimer); showPDFFallback(url, body); };
+  iframe.src=proxyUrl;
+  body.innerHTML='';
+  body.appendChild(iframe);
+}
+
+function showPDFFallback(url, body){
+  const gdocsUrl=`https://docs.google.com/gview?url=${encodeURIComponent(url)}&embedded=true`;
+  const proxyUrl=`/proxy-file?url=${encodeURIComponent(url)}`;
+
+  body.innerHTML=`
+    <div class="pdfFallback">
+      <div class="fIco">📄</div>
+      <p>${t('pdfBlocked')}</p>
+      <div class="fallbackBtns">
+        <button class="btnFallback primary" onclick="loadGDocsViewer('${esc(url)}')">
+          📖 ${t('openGdocs')}
+        </button>
+        <a class="btnFallback" href="${esc(proxyUrl)}" target="_blank">
+          🔗 ${t('openDirect')}
+        </a>
+        <a class="btnFallback" href="${esc(proxyUrl)}" download>
+          ⬇ ${t('download')}
+        </a>
+      </div>
+    </div>`;
+}
+
+function loadGDocsViewer(url){
+  const gdocsUrl=`https://docs.google.com/gview?url=${encodeURIComponent(url)}&embedded=true`;
+  const body=document.getElementById('previewBody');
+  body.innerHTML=`<iframe src="${gdocsUrl}" style="width:100%;height:100%;border:none;display:block" title="PDF via Google Docs"></iframe>`;
+  document.getElementById('zoomBar').style.display='none';
+}
+
+function loadImage(url, body){
+  const wrap=document.createElement('div');
+  wrap.className='imgZoomWrap';
+  const img=new Image();
+  img.onload=()=>{
+    img.style.transformOrigin='top center';
+    img.style.transition='transform .2s';
+    wrap.appendChild(img);
+    body.innerHTML='';
+    body.appendChild(wrap);
+    // Pinch to zoom (móvil)
+    enablePinchZoom(wrap, img);
+  };
+  img.onerror=()=>{
+    body.innerHTML=`<div class="previewEmpty"><div class="pIcon">🖼️</div><span>${t('noPreview')}</span></div>`;
+  };
+  img.src=url;
+  img.alt='preview';
+}
+
+/* ── Pinch-to-zoom para móvil ── */
+function enablePinchZoom(wrap, img){
+  let lastDist=0;
+  wrap.addEventListener('touchstart',e=>{
+    if(e.touches.length===2) lastDist=Math.hypot(
+      e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY);
+  },{passive:true});
+  wrap.addEventListener('touchmove',e=>{
+    if(e.touches.length===2){
+      const dist=Math.hypot(
+        e.touches[0].clientX-e.touches[1].clientX,
+        e.touches[0].clientY-e.touches[1].clientY);
+      if(lastDist>0){
+        zoomLevel=Math.min(3,Math.max(0.5,zoomLevel*(dist/lastDist)));
+        img.style.transform=`scale(${zoomLevel})`;
+        document.getElementById('zoomLabel').textContent=Math.round(zoomLevel*100)+'%';
+      }
+      lastDist=dist;
+    }
+  },{passive:true});
+}
+
+function clearPreview(){
+  document.getElementById('previewFileName').textContent=t('previewHintShort');
+  document.getElementById('previewType').style.display='none';
+  document.getElementById('btnClosePreview').style.display='none';
+  document.getElementById('zoomBar').style.display='none';
+  document.getElementById('previewBody').innerHTML=`
+    <div class="previewEmpty">
+      <div class="pIcon">👁️</div>
+      <span>${t('previewHint').replace(/\n/g,'<br>')}</span>
+    </div>`;
+  document.querySelectorAll('.fileItem').forEach(el=>el.classList.remove('selected'));
+  selectedIdx=null;currentFileUrl='';currentFileType='';
+}
+
+/* ═══════════════════════════════
+   MODAL CONTRASEÑA PDF
+═══════════════════════════════ */
+let pendingAnalyzeIdx = null;
+
+function openPasswordModal(idx){
+  pendingAnalyzeIdx = idx;
+  const f = currentFiles[idx];
+  document.getElementById('pwdFileName').textContent = f.nombre_archivo || '—';
+  document.getElementById('pwdInput').value = '';
+  document.getElementById('pwdInput').type = 'password';
+  document.getElementById('btnEye').textContent = '👁';
+  document.getElementById('pwdErr').classList.remove('show');
+  document.getElementById('pwdErr').textContent = '';
+  document.getElementById('btnPwdOk').disabled = false;
+  document.getElementById('pwdSpinner').style.display = 'none';
+  document.getElementById('pwdOkIcon').style.display = 'inline';
+  document.getElementById('pwdModal').classList.add('open');
+  setTimeout(()=>document.getElementById('pwdInput').focus(), 150);
+}
+
+function closePasswordModal(){
+  document.getElementById('pwdModal').classList.remove('open');
+  pendingAnalyzeIdx = null;
+}
+
+function onModalOverlayClick(e){
+  if(e.target === document.getElementById('pwdModal')) closePasswordModal();
+}
+
+function togglePwdVisibility(){
+  const inp = document.getElementById('pwdInput');
+  const eye = document.getElementById('btnEye');
+  if(inp.type === 'password'){ inp.type='text'; eye.textContent='🙈'; }
+  else { inp.type='password'; eye.textContent='👁'; }
+}
+
+async function confirmPassword(){
+  const pwd = document.getElementById('pwdInput').value;
+  if(!pwd){ document.getElementById('pwdInput').focus(); return; }
+  if(pendingAnalyzeIdx === null) return;
+  document.getElementById('btnPwdOk').disabled = true;
+  document.getElementById('pwdSpinner').style.display = 'inline-block';
+  document.getElementById('pwdOkIcon').style.display = 'none';
+  document.getElementById('pwdErr').classList.remove('show');
+  const idx = pendingAnalyzeIdx;
+  closePasswordModal();
+  await runAnalyze(idx, pwd);
+}
+
+/* ═══════════════════════════════
+   ANALYZE FILE
+═══════════════════════════════ */
+async function analyzeFile(idx){
+  await runAnalyze(idx, null);
+}
+
+async function runAnalyze(idx, password){
+  const f = currentFiles[idx];
+  if(!f||!f.url) return;
+
+  // ── Guarda anti-reprocesamiento en el frontend ──
+  // Si el archivo ya está marcado como analizado y tiene datos en memoria,
+  // simplemente cargamos el análisis almacenado sin llamar al backend.
+  if(f.ya_analizado && f.analisis && !password){
+    loadStoredAnalysis(idx);
+    return;
+  }
+
+  if(selectedIdx!==idx) previewFile(idx);
+  const item = document.querySelector(`.fileItem[data-idx="${idx}"]`);
+  const abtn = document.getElementById(`analyzeBtn-${idx}`);
+  if(item) item.classList.add('analyzing');
+  if(abtn) abtn.classList.add('analyzing');
+  clearResults();
+  document.getElementById('errBox').classList.remove('open');
+  try{
+    const bodyObj = {url:f.url, id_usuario:f.id_usuario||0, id_archivo:f.id_archivo||null, output_lang:lang, force_reprocess:false};
+    if(password) bodyObj.password = password;
+    const res = await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bodyObj)});
+
+    if(res.status === 423){
+      if(item) item.classList.remove('analyzing');
+      if(abtn) abtn.classList.remove('analyzing');
+      openPasswordModal(idx);
+      return;
+    }
+
+    const raw = await res.text();
+    let data;
+    try{ data=JSON.parse(raw); }catch{ throw new Error((lang==='es'?'Respuesta no válida:\n':'Invalid response:\n')+raw); }
+
+    if(res.status===400 && data.detail && data.detail.includes('Contraseña incorrecta')){
+      if(item) item.classList.remove('analyzing');
+      if(abtn) abtn.classList.remove('analyzing');
+      openPasswordModal(idx);
+      const errEl = document.getElementById('pwdErr');
+      errEl.textContent = t('pwdWrong');
+      errEl.classList.add('show');
+      return;
+    }
+
+    if(data.error) throw new Error(data.error+(data.raw_output?'\n\n'+data.raw_output:''));
+
+    // Normalizar al nuevo formato si viene legacy (sin "examenes")
+    if(!data.examenes){
+      data = { examenes:[data], id_usuario:data.id_usuario, id_archivo:data.id_archivo,
+               multi:false, nombre_alternativo:data.nombre_alternativo };
+    }
+
+    renderMultiResults(data);
+
+    // Si vino del caché del backend, mostrar toast
+    if(data.cached){
+      showToast(lang==='es' ? '📦 Cargado desde caché (ya analizado)' : '📦 Loaded from cache (already analyzed)');
+    }
+
+    // ── Guardar automáticamente en Oracle solo si es análisis nuevo ──
+    if(!data.cached && f.id_archivo && data.nombre_alternativo){
+      await saveAnalysis(f.id_archivo, data.nombre_alternativo, data, idx);
+    }
+
+  }catch(err){
+    document.getElementById('errMsg').textContent=err.message;
+    document.getElementById('errBox').classList.add('open');
+  }finally{
+    if(item) item.classList.remove('analyzing');
+    if(abtn) abtn.classList.remove('analyzing');
+  }
+}
+
+/* ── Guardar análisis en Oracle y actualizar item en lista ── */
+async function saveAnalysis(idArchivo, nombreAlternativo, data, idx){
+  try{
+    const res = await fetch('/save-analysis',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        id_archivo: idArchivo,
+        nombre_alternativo: nombreAlternativo,
+        analisis: JSON.stringify(data)
+      })
+    });
+    if(!res.ok){ console.warn('save-analysis error:', await res.text()); return; }
+
+    currentFiles[idx].ya_analizado = true;
+    currentFiles[idx].nombre_alternativo = nombreAlternativo;
+    currentFiles[idx].analisis = JSON.stringify(data);
+
+    const item = document.querySelector(`.fileItem[data-idx="${idx}"]`);
+    if(item){
+      item.classList.add('done');
+      const nameEl = item.querySelector('.fileName');
+      if(nameEl){
+        const parts = nombreAlternativo.split('_');
+        const datePart = parts[parts.length-1];
+        const isDate = /^\d{8}$/.test(datePart);
+        const namePart = isDate ? parts.slice(0,-1).join(' ') : parts.join(' ');
+        nameEl.textContent = isDate ? namePart + ' · ' + datePart.replace(/(\d{4})(\d{2})(\d{2})/,'$1/$2/$3') : nombreAlternativo;
+        nameEl.title = nombreAlternativo;
+      }
+      const abtn = document.getElementById(`analyzeBtn-${idx}`);
+      if(abtn){ abtn.disabled = true; abtn.classList.add('analyzeBtn'); }
+      const doneBadge = item.querySelector('.doneBadge');
+      if(doneBadge) doneBadge.style.display='inline-flex';
+      item.onclick = ()=>loadStoredAnalysis(idx);
+    }
+
+    showToast(t('savedOk'));
+  }catch(e){
+    console.warn('Error guardando análisis:', e);
+  }
+}
+
+/* ── Cargar análisis almacenado ── */
+function loadStoredAnalysis(idx){
+  const f = currentFiles[idx];
+  if(!f||!f.analisis) return;
+  previewFile(idx);
+  try{
+    let data = typeof f.analisis === 'string' ? JSON.parse(f.analisis) : f.analisis;
+    // Normalizar legacy
+    if(!data.examenes){
+      data = { examenes:[data], id_usuario:data.id_usuario, id_archivo:data.id_archivo,
+               multi:false, nombre_alternativo:data.nombre_alternativo };
+    }
+    // Retrocompatibilidad: reconstruir tipo_examen desde nombre_alternativo si falta
+    data.examenes.forEach(e => {
+      if(!e.tipo_examen && data.nombre_alternativo){
+        const parts = data.nombre_alternativo.split('_');
+        const last = parts[parts.length-1];
+        const nameOnly = /^\d{8}$/.test(last) ? parts.slice(0,-1) : parts;
+        e.tipo_examen = nameOnly.join(' ');
+      }
+    });
+    renderMultiResults(data);
+  }catch(e){
+    document.getElementById('errMsg').textContent = 'Error cargando análisis guardado: ' + e.message;
+    document.getElementById('errBox').classList.add('open');
+  }
+}
+
+/* ═══════════════════════════════
+   RENDER — ENTRY POINT MULTI
+═══════════════════════════════ */
+function renderMultiResults(data){
+  lastData = data;
+  allExamenes = data.examenes || [];
+  examIdx = 0;
+
+  const multi = allExamenes.length > 1;
+
+  // Banner multi-examen
+  const banner = document.getElementById('multiExamBanner');
+  const navWrap = document.getElementById('examNavWrap');
+  const navBar  = document.getElementById('examNavBar');
+
+  if(multi){
+    document.getElementById('multiExamTitle').textContent =
+      lang==='es' ? `📋 ${allExamenes.length} exámenes detectados en este documento`
+                  : `📋 ${allExamenes.length} exams detected in this document`;
+    document.getElementById('multiExamSub').textContent =
+      lang==='es' ? 'Navega entre ellos con los botones de abajo.'
+                  : 'Navigate between them using the buttons below.';
+    banner.style.display='flex';
+
+    // Botones de navegación — nombre completo visible, barra con scroll
+    navBar.innerHTML = allExamenes.map((e,i)=>{
+      const nombre = e.tipo_examen || (lang==='es'?'Examen':'Exam');
+      return `<button class="examNavBtn${i===0?' active':''}" id="examNavBtn-${i}"
+        onclick="switchExam(${i})" title="${esc(nombre)}">
+        <span class="eIdx">${i+1}</span>
+        ${esc(nombre)}
+      </button>`;
+    }).join('')+
+      `<div class="examNavArrows">
+        <button class="examNavArrow" id="navPrev" onclick="switchExam(examIdx-1)" title="Anterior">‹</button>
+        <span class="examCounter" id="examCounter">1/${allExamenes.length}</span>
+        <button class="examNavArrow" id="navNext" onclick="switchExam(examIdx+1)" title="Siguiente">›</button>
+      </div>`;
+    navWrap.style.display='block';
+  } else {
+    banner.style.display='none';
+    navWrap.style.display='none';
+  }
+
+  document.getElementById('resultsArea').classList.add('open');
+  renderExam(allExamenes[0], data);
+}
+
+function switchExam(idx){
+  if(idx < 0 || idx >= allExamenes.length) return;
+  examIdx = idx;
+
+  // Actualizar botones nav activos
+  document.querySelectorAll('.examNavBtn').forEach((b,i)=>b.classList.toggle('active',i===idx));
+  document.getElementById('examCounter').textContent=`${idx+1}/${allExamenes.length}`;
+  document.getElementById('navPrev').disabled = idx===0;
+  document.getElementById('navNext').disabled = idx===allExamenes.length-1;
+
+  renderExam(allExamenes[idx], lastData);
+
+  // Scroll suave al área de resultados
+  document.getElementById('resultsArea').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+/* ═══════════════════════════════
+   RENDER — UN EXAMEN
+═══════════════════════════════ */
+function renderExam(exam, rootData){
+  const res   = exam.resultados    || [];
+  const notas = exam.notas_clinicas || [];
+
+  // ── JSON tab ──
+  document.getElementById('jsonOut').innerHTML = hlJSON(
+    allExamenes.length > 1 ? exam : rootData
+  );
+
+  // ── Tarjeta profesional ──
+  // Prioridad: profesional del examen > profesional_documento
+  const profDoc  = rootData.profesional_documento || {};
+  const instDoc  = rootData.institucion_documento  || '';
+
+  const nombre   = exam.profesional          || profDoc.nombre   || '';
+  const cargo    = exam.cargo_profesional     || profDoc.cargo    || '';
+  const registro = exam.registro_profesional  || profDoc.registro || '';
+  const inst     = exam.institucion           || instDoc          || '';
+
+  const profCard = document.getElementById('profCard');
+  if(nombre || inst){
+    profCard.style.display = 'flex';
+    profCard.classList.toggle('missing', !nombre);
+
+    const avatarEmoji = getAvatarEmoji(cargo);
+    document.getElementById('profAvatar').textContent    = avatarEmoji;
+    document.getElementById('profNombre').textContent    = nombre || (lang==='es'?'Profesional no identificado':'Unidentified professional');
+    document.getElementById('profCargo').textContent     = cargo  || '';
+    document.getElementById('profCargo').style.display   = cargo  ? 'block' : 'none';
+
+    const regEl = document.getElementById('profRegistro');
+    if(registro){
+      regEl.textContent    = (lang==='es' ? 'Reg. Prof.: ' : 'License: ') + registro;
+      regEl.style.display  = 'block';
+    } else {
+      regEl.style.display  = 'none';
+    }
+
+    const instRow = document.getElementById('profInstRow');
+    if(inst){
+      document.getElementById('profInst').textContent = inst;
+      instRow.style.display = 'flex';
+    } else {
+      instRow.style.display = 'none';
+    }
+  } else {
+    profCard.style.display = 'none';
+  }
+
+  // ── Título y fecha del examen ──
+  const cachedBadge = lastData.cached
+    ? `<span class="cachedBadge">📦 ${lang==='es'?'Caché':'Cached'}</span>` : '';
+  const fhirCat   = exam.fhir_category || '';
+  const fhirChip  = fhirCat
+    ? `<span class="fhirChip ${fhirCat}">${fhirCat}</span>` : '';
+  const subcat    = exam.subcategoria || exam.disciplina || '';
+  const subcatChip = subcat
+    ? `<span class="metaChip">🗂 ${esc(subcat)}</span>` : '';
+
+  document.getElementById('examTitle').innerHTML =
+    esc(exam.tipo_examen || (lang==='es'?'Examen de Laboratorio':'Laboratory Report'))
+    + ' ' + fhirChip + cachedBadge;
+  document.getElementById('examDate').textContent =
+    exam.fecha
+      ? `📅 ${t('dateL')}: ${exam.fecha}  ·  👤 ${t('userL')}: ${rootData.id_usuario}`
+      : `👤 ${t('userL')}: ${rootData.id_usuario}`;
+
+  // CUPS chip
+  const cupsCodigo = exam.codigo_cups;
+  const cupsNombre = exam.nombre_cups;
+  const cupsFuente = exam.cups_fuente || 'sin_match';
+  const cupsScore  = exam.cups_score  || 0;
+  let cupsChipHtml = '';
+  if(cupsCodigo){
+    const tt = `${cupsNombre||''} (score: ${cupsScore})`;
+    const ico = cupsFuente==='llm' ? '🤖' : '🏷';
+    cupsChipHtml = `<span class="cupsChip ${cupsFuente}" title="${esc(tt)}">${ico} CUPS ${cupsCodigo}</span>`;
+  } else {
+    cupsChipHtml = `<span class="cupsChip sin_match" title="Sin código CUPS">🏷 CUPS —</span>`;
+  }
+
+  // examMetaRow: subcategoría + CUPS
+  document.getElementById('examMetaRow').innerHTML = subcatChip + cupsChipHtml;
+
+  // ── Summary chips ──
+  const cnt={normal:0,alto:0,bajo:0,sin_dato:0};
+  res.forEach(r=>{if(r.estado in cnt)cnt[r.estado]++;});
+  document.getElementById('summaryBar').innerHTML=
+    `<div class="chip total clickable active-filter" data-filter="all" onclick="applyFilter('all')">`+
+    `<div class="dot" style="background:var(--muted)"></div>${TR[lang].cParams(res.length)}</div>`+
+    (cnt.normal?`<div class="chip normal clickable" data-filter="normal" onclick="applyFilter('normal')"><div class="dot"></div>${TR[lang].cNormal(cnt.normal)}</div>`:'')+
+    (cnt.alto  ?`<div class="chip alto clickable" data-filter="alto" onclick="applyFilter('alto')"><div class="dot"></div>${TR[lang].cHigh(cnt.alto)}</div>`  :'')+
+    (cnt.bajo  ?`<div class="chip bajo clickable" data-filter="bajo" onclick="applyFilter('bajo')"><div class="dot"></div>${TR[lang].cLow(cnt.bajo)}</div>`   :'');
+
+  // ── Chart ──
+  const numericVals = res.filter(r=>!isNaN(parseFloat(r.valor)));
+  const chartBox    = document.getElementById('chartBox');
+  if(numericVals.length>0){
+    chartBox.style.display='block';
+    if(chartInst) chartInst.destroy();
+    chartInst=new Chart(document.getElementById('myChart').getContext('2d'),{
+      type:'bar',
+      data:{labels:numericVals.map(r=>r.parametro),datasets:[{
+        data:numericVals.map(r=>parseFloat(r.valor)),
+        backgroundColor:numericVals.map(r=>(C[r.estado]||C.sin_dato).bg),
+        borderColor:numericVals.map(r=>(C[r.estado]||C.sin_dato).b),
+        borderWidth:1.5,borderRadius:5,borderSkipped:false}]},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{
+          backgroundColor:'#fff',titleColor:'#0d1929',bodyColor:'#3d5068',
+          borderColor:'#dde4ed',borderWidth:1,padding:10,
+          callbacks:{title:it=>it[0].label,label:it=>{
+            const r=numericVals[it.dataIndex];
+            return[` ${t('tipV')}: ${r.valor}${r.unidad?' '+r.unidad:''}`,
+                   ` ${t('tipR')}: ${r.referencia||'N/A'}`,
+                   ` ${t('tipS')}: ${stateL(r.estado).toUpperCase()}`];}}}},
+        scales:{
+          x:{ticks:{color:'#8fa3bc',font:{family:"'DM Mono',monospace",size:9},maxRotation:40},grid:{color:'#f0f4f8'}},
+          y:{ticks:{color:'#8fa3bc',font:{family:"'DM Mono',monospace",size:9}},grid:{color:'#f0f4f8'}}
+        }}
+    });
+  } else {
+    chartBox.style.display='none';
+    if(chartInst){ chartInst.destroy(); chartInst=null; }
+  }
+
+  // ── Params grid ──
+  const notaByParam={};
+  notas.forEach(n=>{if(n.parametro) notaByParam[n.parametro.toLowerCase()]=n;});
+
+  document.getElementById('paramsGrid').innerHTML = res.map(r=>{
+    const inlineNota = notaByParam[r.parametro.toLowerCase()];
+    const hasNota = !!inlineNota;
+    return `<div class="pRow${hasNota?' has-nota':''}" data-estado="${r.estado}">
+      <div class="pMain">
+        <div class="pName">${esc(r.parametro)}</div>
+        <div class="pVal">${esc(r.valor)}${r.unidad?' <span style="color:var(--muted);font-size:10px">'+esc(r.unidad)+'</span>':''}</div>
+        ${r.referencia?`<span style="font-family:var(--fM);font-size:9px;color:var(--muted)">${esc(r.referencia)}</span>`:''}
+        <span class="bdg ${r.estado}">${stateL(r.estado)}</span>
+      </div>
+      ${r.metodo?`<div class="pMetodo">⚗️ ${esc(r.metodo)}</div>`:''}
+      ${hasNota?`<div class="pNotaInline">${NOTA_ICONS[inlineNota.tipo]||'•'} ${esc(inlineNota.descripcion)}</div>`:''}
+    </div>`;
+  }).join('');
+
+  // ── Notas generales ──
+  const notasSection = document.getElementById('notasSection');
+  const notasGrid    = document.getElementById('notasGrid');
+  const notasGenerales = notas.filter(n=>!n.parametro);
+  if(notasGenerales.length>0){
+    const order={critico:0,advertencia:1,info:2,positivo:3};
+    const sorted=[...notasGenerales].sort((a,b)=>(order[a.tipo]??9)-(order[b.tipo]??9));
+    let notasHtml = sorted.map(n=>`
+      <div class="notaCard ${n.tipo||'info'}">
+        <div class="notaIcon">${NOTA_ICONS[n.tipo]||'ℹ️'}</div>
+        <div class="notaBody">
+          <div class="notaTitulo">${esc(n.titulo||'')}</div>
+          <div class="notaDesc">${esc(n.descripcion||'')}</div>
+        </div>
+      </div>`).join('');
+
+    // Notas médico / paciente del examen (nuevos campos)
+    if(exam.notas_medico){
+      notasHtml += `<div class="notaCard advertencia" style="margin-top:6px">
+        <div class="notaIcon">🩺</div>
+        <div class="notaBody">
+          <div class="notaTitulo">${lang==='es'?'Para el médico':'For the physician'}</div>
+          <div class="notaDesc">${esc(exam.notas_medico)}</div>
+        </div></div>`;
+    }
+    if(exam.notas_paciente){
+      notasHtml += `<div class="notaCard info" style="margin-top:6px">
+        <div class="notaIcon">👤</div>
+        <div class="notaBody">
+          <div class="notaTitulo">${lang==='es'?'Para el paciente':'For the patient'}</div>
+          <div class="notaDesc">${esc(exam.notas_paciente)}</div>
+        </div></div>`;
+    }
+
+    notasGrid.innerHTML = notasHtml;
+    notasSection.style.display='block';
+  } else if(exam.notas_medico || exam.notas_paciente){
+    // No hay notas_clinicas generales pero sí notas médico/paciente
+    let notasHtml = '';
+    if(exam.notas_medico){
+      notasHtml += `<div class="notaCard advertencia">
+        <div class="notaIcon">🩺</div>
+        <div class="notaBody">
+          <div class="notaTitulo">${lang==='es'?'Para el médico':'For the physician'}</div>
+          <div class="notaDesc">${esc(exam.notas_medico)}</div>
+        </div></div>`;
+    }
+    if(exam.notas_paciente){
+      notasHtml += `<div class="notaCard info">
+        <div class="notaIcon">👤</div>
+        <div class="notaBody">
+          <div class="notaTitulo">${lang==='es'?'Para el paciente':'For the patient'}</div>
+          <div class="notaDesc">${esc(exam.notas_paciente)}</div>
+        </div></div>`;
+    }
+    notasGrid.innerHTML = notasHtml;
+    notasSection.style.display = 'block';
+  } else {
+    notasSection.style.display='none';
+  }
+
+  activeFilter='all';
+}
+
+/* Emoji de avatar según especialidad */
+function getAvatarEmoji(cargo){
+  if(!cargo) return '👨‍⚕️';
+  const c = cargo.toLowerCase();
+  if(c.includes('radiol') || c.includes('rx') || c.includes('imagen')) return '🩻';
+  if(c.includes('bacteriol') || c.includes('laborat'))                  return '🔬';
+  if(c.includes('ecograf') || c.includes('sonograf') || c.includes('ultrasoni')) return '📡';
+  if(c.includes('patol'))      return '🧫';
+  if(c.includes('cardiol'))    return '❤️';
+  if(c.includes('neurol'))     return '🧠';
+  if(c.includes('ginecol') || c.includes('obstet')) return '🩺';
+  if(c.includes('pediatr'))    return '👶';
+  if(c.includes('ortoped') || c.includes('traumat')) return '🦴';
+  return '👨‍⚕️';
+}
+
+const C={
+  normal:  {bg:'rgba(5,150,105,.6)', b:'#059669'},
+  alto:    {bg:'rgba(220,38,38,.6)', b:'#dc2626'},
+  bajo:    {bg:'rgba(217,119,6,.6)', b:'#d97706'},
+  sin_dato:{bg:'rgba(148,163,184,.5)',b:'#94a3b8'},
+};
+
+const NOTA_ICONS={critico:'🚨',advertencia:'⚠️',info:'ℹ️',positivo:'✅'};
+
+function clearResults(){
+  lastData=null; allExamenes=[]; examIdx=0;
+  document.getElementById('resultsArea').classList.remove('open');
+  document.getElementById('multiExamBanner').style.display='none';
+  document.getElementById('examNavWrap').style.display='none';
+}
+function copyAs(format){
+  if(!lastData) return;
+  const exam  = allExamenes[examIdx] || {};
+  const res   = exam.resultados    || [];
+  const notas = exam.notas_clinicas || [];
+  const profDoc  = lastData.profesional_documento || {};
+  const instDoc  = lastData.institucion_documento  || '';
+  const examName = exam.tipo_examen || (lang==='es'?'Examen de Laboratorio':'Laboratory Report');
+  const fecha    = exam.fecha || '—';
+
+  // Datos del profesional para el examen activo
+  const profNombre   = exam.profesional          || profDoc.nombre   || '';
+  const profCargo    = exam.cargo_profesional     || profDoc.cargo    || '';
+  const profRegistro = exam.registro_profesional  || profDoc.registro || '';
+  const profInst     = exam.institucion           || instDoc          || '';
+
+  let text='';
+
+  if(format==='plain'){
+    const lines=[`${examName} | ${t('dateL')}: ${fecha} | ${t('userL')}: ${lastData.id_usuario}`];
+    if(profNombre)   lines.push(`${lang==='es'?'Profesional':'Professional'}: ${profNombre}${profCargo?' ('+profCargo+')':''}`);
+    if(profRegistro) lines.push(`${lang==='es'?'Reg. Prof.':'License'}: ${profRegistro}`);
+    if(profInst)     lines.push(`${lang==='es'?'Institución':'Institution'}: ${profInst}`);
+    lines.push('', ...res.map(r=>`• ${r.parametro}: ${r.valor}${r.unidad?' '+r.unidad:''} [${stateL(r.estado).toUpperCase()}]${r.referencia?' ('+t('tipR')+': '+r.referencia+')':''}`));
+    if(notas.length) lines.push('',`── ${t('aiSummaryTitle')} ──`,...notas.map(n=>`${NOTA_ICONS[n.tipo]||'•'} ${n.titulo}: ${n.descripcion}`));
+    text=lines.join('\n');
+  } else if(format==='table'){
+    text=['Parámetro\tValor\tUnidad\tReferencia\tEstado',...res.map(r=>[r.parametro,r.valor,r.unidad||'',r.referencia||'',stateL(r.estado)].join('\t'))].join('\n');
+  } else if(format==='markdown'){
+    const rows=res.map(r=>`| ${r.parametro} | ${r.valor} | ${r.unidad||''} | ${r.referencia||''} | ${stateL(r.estado)} |`);
+    const notaMd=notas.length?[`\n### ${t('aiSummaryTitle')}`,...notas.map(n=>`- **${n.titulo}**: ${n.descripcion}`)]:[];
+    const profMd=profNombre?[`> **${lang==='es'?'Profesional':'Professional'}:** ${profNombre}${profCargo?' · '+profCargo:''}${profRegistro?' · Reg: '+profRegistro:''}${profInst?' · '+profInst:''}`,'']:[];
+    text=[`## ${examName}`,`**${t('dateL')}:** ${fecha}  **${t('userL')}:** ${lastData.id_usuario}`,...profMd,'',
+      `| Parámetro | ${t('tipV')} | Unidad | ${t('tipR')} | ${t('tipS')} |`,'|---|---|---|---|---|',
+      ...rows,...notaMd].join('\n');
+  } else {
+    text=JSON.stringify(allExamenes.length > 1 ? lastData : exam, null, 2);
+  }
+
+  navigator.clipboard.writeText(text).then(()=>{
+    const idMap={plain:'cPlain',table:'cTable',markdown:'cMarkdown',json:'cJSON'};
+    const btn=document.getElementById(idMap[format]);
+    if(btn){btn.classList.add('done');setTimeout(()=>btn.classList.remove('done'),1800);}
+    showToast(t('copied'));
+  });
+}
+
+
+function copyRawJSON(){
+  if(!lastData) return;
+  navigator.clipboard.writeText(JSON.stringify(lastData,null,2)).then(()=>{
+    const btn=document.getElementById('btnCpJSON');
+    btn.textContent=t('copied');btn.classList.add('cp');
+    setTimeout(()=>{btn.textContent=t('copyBtn');btn.classList.remove('cp');},2000);
+  });
+}
+
+/* ═══════════════════════════════
+   SYNTAX HIGHLIGHT
+═══════════════════════════════ */
+function hlJSON(obj){
+  return JSON.stringify(obj,null,2).replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    m=>{
+      if(/^"/.test(m)) return/:$/.test(m)?`<span class="jk">${m}</span>`:`<span class="js">${m}</span>`;
+      if(/true|false/.test(m)) return`<span class="jb">${m}</span>`;
+      if(/null/.test(m))       return`<span class="jz">${m}</span>`;
+      return`<span class="jn">${m}</span>`;
+    }
+  );
+}
+</script>
+</body>
+</html>
